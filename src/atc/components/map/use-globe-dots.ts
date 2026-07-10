@@ -25,9 +25,9 @@ const TRAIL_LAYER_ID = "globe-trail-lines";
 
 /**
  * Custom hook that manages native MapLibre GeoJSON circle + line layers for
- * rendering aircraft dots AND trail lines at low globe zoom levels where
- * deck.gl accuracy degrades. Native MapLibre layers follow the globe
- * curvature perfectly and handle antimeridian crossings automatically.
+ * rendering aircraft dots AND trail lines at overview zoom levels. Native
+ * MapLibre layers keep world/continent traffic lightweight in both Mercator
+ * and globe projection, follow globe curvature, and handle the antimeridian.
  */
 export function useGlobeDots(
   map: maplibregl.Map | null,
@@ -190,15 +190,19 @@ export function useGlobeDots(
   /**
    * Called from the RAF animation loop. Updates (or clears) both the dot
    * GeoJSON source and the trail line GeoJSON source based on current
-   * zoom level and globe mode.
+   * zoom level and overview mode.
    */
-  function updateGlobeDots(isGlobe: boolean, currentZoom: number, now: number) {
+  function updateGlobeDots(
+    overviewEnabled: boolean,
+    currentZoom: number,
+    now: number,
+  ) {
     if (!map) return;
 
     const MAX_ALTITUDE_METERS = 13000;
 
-    // Hide layers unless globe mode AND below switch zoom
-    const dotsVisible = isGlobe && currentZoom < GLOBE_NATIVE_ZOOM_CEIL;
+    const dotsVisible =
+      overviewEnabled && currentZoom < GLOBE_NATIVE_ZOOM_CEIL;
     // Only call setLayoutProperty when visibility actually changes
     if (dotsVisible !== lastDotsVisibleRef.current) {
       lastDotsVisibleRef.current = dotsVisible;
@@ -222,7 +226,7 @@ export function useGlobeDots(
       }
     }
 
-    if (isGlobe) {
+    if (overviewEnabled) {
       if (currentZoom < GLOBE_NATIVE_ZOOM_CEIL) {
         if (globeZoomEnteredAtRef.current === 0) {
           globeZoomEnteredAtRef.current = now;

@@ -19,6 +19,14 @@ type StatusBarProps = {
   cityName: string;
   cityIata: string;
   cityCoordinates: [number, number];
+  flightCount?: number;
+  initialLoading?: boolean;
+  refreshing?: boolean;
+  radarSource?: string | null;
+  radarStale?: boolean;
+  radarUnavailable?: boolean;
+  radarError?: string | null;
+  lastUpdatedAt?: number | null;
   rateLimited?: boolean;
   retryIn?: number;
   onNorthUp?: () => void;
@@ -33,6 +41,14 @@ export function StatusBar({
   cityName,
   cityIata,
   cityCoordinates,
+  flightCount = 0,
+  initialLoading = false,
+  refreshing = false,
+  radarSource = null,
+  radarStale = false,
+  radarUnavailable = false,
+  radarError = null,
+  lastUpdatedAt = null,
   rateLimited = false,
   retryIn = 0,
   onNorthUp,
@@ -77,10 +93,38 @@ export function StatusBar({
   }, [atcToggle]);
 
   const isAtcPlaying = atc.status === "playing";
+  const connecting =
+    initialLoading || (!radarSource && flightCount === 0 && !radarError);
+  const unavailable =
+    flightCount === 0 &&
+    (radarUnavailable || (!!radarError && !connecting));
+  const degraded =
+    flightCount > 0 && (radarStale || radarUnavailable || !!radarError);
+  const formattedFlightCount = flightCount.toLocaleString("en-US");
+  const feedLabel = connecting
+    ? "Connecting to live traffic"
+    : unavailable
+      ? "Live traffic unavailable"
+      : degraded
+        ? `Cached real traffic · ${formattedFlightCount}`
+        : refreshing
+          ? `Updating · ${formattedFlightCount}`
+          : `Live · ${formattedFlightCount}`;
+  const feedTitle = [
+    radarSource,
+    lastUpdatedAt
+      ? `Last update ${new Date(lastUpdatedAt).toISOString()}`
+      : null,
+    radarError,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const showFeedWarning = !rateLimited && (unavailable || degraded);
+
   return (
     <div className="relative flex flex-col items-start gap-2">
       <AnimatePresence>
-        {rateLimited && (
+        {(rateLimited || showFeedWarning) && (
           <motion.div
             initial={{ opacity: 0, y: 8, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -91,9 +135,13 @@ export function StatusBar({
           >
             <ShieldAlert className="h-3.5 w-3.5 text-amber-400/80" />
             <span className="text-[11px] font-medium tracking-wide text-amber-300/70">
-              Rate limited
+              {rateLimited
+                ? "Rate limited"
+                : unavailable
+                  ? "Live traffic temporarily unavailable"
+                  : "Refresh delayed · showing last real positions"}
             </span>
-            {retryIn > 0 && (
+            {rateLimited && retryIn > 0 && (
               <>
                 <div className="h-3 w-px bg-amber-400/10" />
                 <span className="font-mono text-[11px] font-semibold tabular-nums text-amber-400/60">
@@ -104,6 +152,46 @@ export function StatusBar({
           </motion.div>
         )}
       </AnimatePresence>
+
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ type: "spring", stiffness: 320, damping: 25, delay: 0.2 }}
+        className="flex items-center gap-2 rounded-lg border px-2.5 py-1.5 backdrop-blur-2xl"
+        style={{
+          borderColor: unavailable
+            ? "rgb(251 113 133 / 0.18)"
+            : degraded
+              ? "rgb(251 191 36 / 0.16)"
+              : "rgb(var(--ui-fg) / 0.06)",
+          backgroundColor: "rgb(var(--ui-bg) / 0.52)",
+        }}
+        role="status"
+        aria-live="polite"
+        title={feedTitle || undefined}
+      >
+        <span
+          className={`h-1.5 w-1.5 rounded-full ${
+            unavailable
+              ? "bg-rose-400"
+              : degraded
+                ? "bg-amber-400"
+                : "bg-emerald-400"
+          } ${connecting || refreshing ? "animate-pulse" : ""}`}
+          aria-hidden="true"
+        />
+        <span
+          className={`text-[10px] font-semibold tracking-wide ${
+            unavailable
+              ? "text-rose-300/80"
+              : degraded
+                ? "text-amber-300/75"
+                : "text-foreground/55"
+          }`}
+        >
+          {feedLabel}
+        </span>
+      </motion.div>
 
       <div className="flex flex-col-reverse items-start gap-2 sm:flex-row sm:items-center">
         <motion.div

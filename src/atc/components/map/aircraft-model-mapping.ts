@@ -1,7 +1,8 @@
 // ── Aircraft Model Mapping ─────────────────────────────────────────────
 //
 // Maps ADS-B category + ICAO typeCode → 3D model silhouette.
-// Models are Draco-compressed GLB files served from bundled public assets.
+// Models are optimized GLB files served from bundled public assets without
+// Draco compression, avoiding an external WASM decoder dependency.
 //
 // Category-based fallback assigns generic silhouettes (narrowbody, etc.).
 // TypeCode-based matching routes iconic types (A380, B737) to dedicated models.

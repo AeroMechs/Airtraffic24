@@ -35,9 +35,7 @@ export default async function Home({
       <FlightTracker
         airspaceAvailable
         aircraftShadows={false}
-        force2DMarkers
         initialCity={await initialCity(searchParams)}
-        initialMapStyleId="satellite"
       />
     </main>
   );

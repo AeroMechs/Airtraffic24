@@ -6,6 +6,7 @@ import { smoothstep } from "./camera-controller-utils";
 import { useSettings } from "@/atc/hooks/use-settings";
 import type { City } from "@/atc/lib/cities";
 import type { FlightState } from "@/atc/lib/opensky";
+import type { AircraftCameraMode } from "@/atc/lib/aircraft-camera-mode";
 import { useFpvCamera } from "./use-fpv-camera";
 import { useKeyboardCamera } from "./use-keyboard-camera";
 import { useOrbitCamera } from "./use-orbit-camera";
@@ -24,12 +25,14 @@ export function CameraController({
   cityZoom = DEFAULT_ZOOM,
   followFlight = null,
   fpvFlight = null,
+  fpvCameraMode = "rear",
   fpvPositionRef,
 }: {
   city: City;
   cityZoom?: number;
   followFlight?: FlightState | null;
   fpvFlight?: FlightState | null;
+  fpvCameraMode?: AircraftCameraMode;
   fpvPositionRef?: MutableRefObject<FpvPosition | null>;
 }) {
   const { map, isLoaded } = useMap();
@@ -60,9 +63,10 @@ export function CameraController({
   // City flyTo
   useEffect(() => {
     if (!map || !isLoaded || !city) return;
-    if (city.id === prevCityRef.current) return;
+    const cityViewKey = `${city.id}:${cityZoom.toFixed(2)}`;
+    if (cityViewKey === prevCityRef.current) return;
 
-    prevCityRef.current = city.id;
+    prevCityRef.current = cityViewKey;
     map.flyTo({
       center: city.coordinates,
       zoom: cityZoom,
@@ -153,6 +157,7 @@ export function CameraController({
     fpvPosRef,
     isFpvActiveRef,
     prevFpvRef,
+    fpvCameraMode,
     settings.altitudeDisplayMode,
   );
 

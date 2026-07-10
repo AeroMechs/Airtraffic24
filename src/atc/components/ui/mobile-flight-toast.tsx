@@ -565,7 +565,7 @@ export function MobileFlightToast({
 
       {skylineInternal ? <MobileSkylineOperationsSection flight={flight} /> : null}
 
-      {/* FPV button */}
+      {/* Aircraft follow camera */}
       {onToggleFpv && (
         <div className="mx-4 mb-4 overflow-hidden rounded-[22px] border border-foreground/[0.07] bg-foreground/[0.035] shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
           <button
@@ -580,7 +580,9 @@ export function MobileFlightToast({
                 : ""
             }`}
             aria-label={
-              isFpvActive ? "Exit first person view" : "Enter first person view"
+              isFpvActive
+                ? "Stop following aircraft"
+                : "Open aircraft follow camera"
             }
           >
             <MobileIconCell active={isFpvActive}>
@@ -593,7 +595,7 @@ export function MobileFlightToast({
                 isFpvActive ? "text-emerald-300/90" : "text-foreground/72"
               }`}
             >
-              {isFpvActive ? "Exit FPV" : "First Person View"}
+              {isFpvActive ? "Stop Following" : "Follow Aircraft"}
             </span>
           </button>
         </div>

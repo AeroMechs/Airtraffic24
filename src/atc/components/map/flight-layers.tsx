@@ -47,6 +47,7 @@ import {
   computeBankByIcao,
   computeInterpolatedFlights,
   FLIGHT_RENDER_STALE_MS,
+  MAX_FLIGHT_EXTRAPOLATION_MS,
   getSafeInterpolationProgress,
   updateInterpolatedInPlace,
 } from "./flight-interpolation";
@@ -61,7 +62,91 @@ import { altitudeToColor, altitudeToElevation } from "@/atc/lib/flight-utils";
 import { useGlobeDots } from "./use-globe-dots";
 
 const HIGH_DENSITY_TRAIL_LIMIT = 700;
-const HIGH_DENSITY_3D_LIMIT = 900;
+const HIGH_QUALITY_DEVICE_PIXEL_LIMIT = 900;
+const HIGH_DENSITY_3D_LIMIT = 1_800;
+const HIGH_DENSITY_3D_ZOOM_LIMIT = 7.25;
+const HIGH_DENSITY_TRAIL_ZOOM_RECOVERY = 8;
+const VIEWPORT_PADDING_RATIO = 0.3;
+const VIEWPORT_UPDATE_THROTTLE_MS = 120;
+const DECK_DEVICE_PIXEL_RATIO_CAP = 1.5;
+const DATA_SNAP_STALE_MIN_MS = 120_000;
+const FRAME_STALE_GRACE_MS = 5_000;
+
+type ExpandedViewportBounds = {
+  west: number;
+  east: number;
+  south: number;
+  north: number;
+  allLongitudes: boolean;
+};
+
+function getExpandedViewportBounds(
+  map: maplibregl.Map,
+): ExpandedViewportBounds {
+  const bounds = map.getBounds();
+  let west = bounds.getWest();
+  let east = bounds.getEast();
+  if (east < west) east += 360;
+
+  const width = Math.max(0, east - west);
+  const height = Math.max(0, bounds.getNorth() - bounds.getSouth());
+  const lngPadding = width * VIEWPORT_PADDING_RATIO;
+  const latPadding = height * VIEWPORT_PADDING_RATIO;
+
+  west -= lngPadding;
+  east += lngPadding;
+
+  return {
+    west,
+    east,
+    south: Math.max(-90, bounds.getSouth() - latPadding),
+    north: Math.min(90, bounds.getNorth() + latPadding),
+    allLongitudes: east - west >= 360,
+  };
+}
+
+function isFlightInsideViewport(
+  flight: FlightState,
+  bounds: ExpandedViewportBounds,
+): boolean {
+  const longitude = flight.longitude;
+  const latitude = flight.latitude;
+  if (longitude == null || latitude == null) return false;
+  if (latitude < bounds.south || latitude > bounds.north) return false;
+  if (bounds.allLongitudes) return true;
+
+  // MapLibre can expose unwrapped bounds around the international date line.
+  // Compare adjacent world copies without normalising the camera itself.
+  for (let worldCopy = -2; worldCopy <= 2; worldCopy++) {
+    const shiftedLongitude = longitude + worldCopy * 360;
+    if (shiftedLongitude >= bounds.west && shiftedLongitude <= bounds.east) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getDataSnapStaleMs(animationDurationMs: number): number {
+  return Math.max(DATA_SNAP_STALE_MIN_MS, animationDurationMs * 2.5);
+}
+
+function getFrameStaleMs(animationDurationMs: number): number {
+  return Math.max(
+    FLIGHT_RENDER_STALE_MS,
+    35_000,
+    animationDurationMs +
+      MAX_FLIGHT_EXTRAPOLATION_MS +
+      FRAME_STALE_GRACE_MS,
+  );
+}
+
+function getDeckDevicePixelRatio(): number {
+  if (typeof window === "undefined") return 1;
+  const memory = (navigator as Navigator & { deviceMemory?: number })
+    .deviceMemory;
+  const cap = memory != null && memory <= 4 ? 1 : DECK_DEVICE_PIXEL_RATIO_CAP;
+  return Math.max(1, Math.min(window.devicePixelRatio || 1, cap));
+}
 
 export function FlightLayers({
   flights,
@@ -82,6 +167,7 @@ export function FlightLayers({
 }: FlightLayerProps) {
   const { map, isLoaded } = useMap();
   const overlayRef = useRef<MapboxOverlay | null>(null);
+  const devicePixelRatioRef = useRef(getDeckDevicePixelRatio());
   const atlasUrl = getAircraftAtlasUrl();
   const haloUrl = getHaloUrl();
   const ringUrl = getRingUrl();
@@ -124,6 +210,38 @@ export function FlightLayers({
   // to avoid ~18K object allocations/sec from spread syntax
   const interpArrayRef = useRef<FlightState[]>([]);
   const lastFlightsForInterpRef = useRef<FlightState[] | null>(null);
+
+  // Only aircraft in (or just outside) the visible map are sent through
+  // interpolation and deck.gl. The expanded bounds prevent pop-in while an
+  // aircraft or camera crosses an edge, while selected/followed aircraft are
+  // retained even when temporarily off-screen.
+  const viewportBoundsRef = useRef<ExpandedViewportBounds | null>(null);
+  const viewportRevisionRef = useRef(0);
+  const viewportFlightCacheRef = useRef<{
+    source: FlightState[] | null;
+    revision: number;
+    selectedId: string | null;
+    fpvId: string | null;
+    result: FlightState[];
+  }>({
+    source: null,
+    revision: -1,
+    selectedId: null,
+    fpvId: null,
+    result: [],
+  });
+  const visibleTrailEntriesCacheRef = useRef<{
+    source: TrailEntry[] | null;
+    flights: FlightState[] | null;
+    selectedOnlyId: string | null;
+    result: TrailEntry[];
+  }>({
+    source: null,
+    flights: null,
+    selectedOnlyId: null,
+    result: [],
+  });
+  const selectedTrailFlightsRef = useRef<FlightState[]>([]);
 
   // Set on tab resume, cleared when fresh flight data arrives.
   // While true, the RAF loop clamps rawT to 1 (no dead reckoning)
@@ -214,10 +332,12 @@ export function FlightLayers({
     const now = performance.now();
     const elapsed = now - dataTimestampRef.current;
 
-    // If data is stale (tab was hidden 15s+), snap directly to new
-    // positions instead of slowly interpolating from outdated ones.
+    // A normal global-radar update is roughly 30s apart. Only snap after a
+    // genuinely long pause (for example a suspended tab), otherwise each
+    // ordinary poll would be treated as stale and aircraft would jump.
     const isStale =
-      dataTimestampRef.current > 0 && elapsed > FLIGHT_RENDER_STALE_MS;
+      dataTimestampRef.current > 0 &&
+      elapsed > getDataSnapStaleMs(animDurationRef.current);
 
     if (isStale) {
       const snap = new Map<string, Snapshot>();
@@ -339,6 +459,38 @@ export function FlightLayers({
     };
   }, [map]);
 
+  // Keep a throttled expanded viewport for render culling. This runs during
+  // camera movement without touching React state, so panning and follow mode
+  // stay responsive even with several thousand global aircraft loaded.
+  useEffect(() => {
+    if (!map || !isLoaded) return;
+
+    let lastUpdateAt = 0;
+
+    const updateViewport = (force = false) => {
+      const now = performance.now();
+      if (!force && now - lastUpdateAt < VIEWPORT_UPDATE_THROTTLE_MS) return;
+      lastUpdateAt = now;
+      viewportBoundsRef.current = getExpandedViewportBounds(map);
+      viewportRevisionRef.current++;
+      lastFlightsForInterpRef.current = null;
+    };
+
+    const onMove = () => updateViewport(false);
+    const onMoveEnd = () => updateViewport(true);
+
+    updateViewport(true);
+    map.on("move", onMove);
+    map.on("moveend", onMoveEnd);
+    map.on("resize", onMoveEnd);
+
+    return () => {
+      map.off("move", onMove);
+      map.off("moveend", onMoveEnd);
+      map.off("resize", onMoveEnd);
+    };
+  }, [map, isLoaded]);
+
   const handleClick = useCallback(
     (info: PickingInfo<FlightState>) => {
       if (info.object) onClick(info);
@@ -400,7 +552,7 @@ export function FlightLayers({
         interleaved: false,
         views: new MapView({ id: "mapbox" }) as never,
         pickingRadius: AIRCRAFT_PICK_RADIUS_PX,
-        useDevicePixels: 1,
+        useDevicePixels: devicePixelRatioRef.current,
         _typedArrayManagerProps: { overAlloc: 1.5, poolSize: 0 },
         layers: [],
       });
@@ -547,10 +699,11 @@ export function FlightLayers({
 
       const currentZoom = map?.getZoom() ?? 10;
       const isGlobe = globeModeRef.current;
+      const useNativeOverview = currentZoom < GLOBE_FADE_ZOOM_CEIL;
 
       let globeFade = 1;
       let layersVisible = true;
-      if (isGlobe) {
+      if (useNativeOverview) {
         if (currentZoom < GLOBE_FADE_ZOOM_FLOOR) {
           layersVisible = false;
           globeFade = 0;
@@ -563,6 +716,22 @@ export function FlightLayers({
       }
 
       try {
+        const currentFlights = flightsRef.current;
+        const currentTrails = trailsRef.current;
+
+        // Globe dots use their own inexpensive MapLibre source. When the
+        // detailed deck.gl layers are outside their visibility range, avoid
+        // all interpolation, trail, and model work for this frame.
+        updateGlobeDotsRef.current(
+          isGlobe || useNativeOverview,
+          currentZoom,
+          now,
+        );
+        if (!layersVisible) {
+          overlay.setProps({ layers: [], useDevicePixels: 1 });
+          return;
+        }
+
         const elapsed = performance.now() - dataTimestampRef.current;
         const progress = getSafeInterpolationProgress({
           elapsedMs: elapsed,
@@ -570,20 +739,55 @@ export function FlightLayers({
           // `resumeSnapRef` stays true until fresh flight data arrives; during
           // that resume window we render the latest authoritative snapshot only.
           pageActive: pageActiveRef.current && !resumeSnapRef.current,
+          staleThresholdMs: getFrameStaleMs(animDurationRef.current),
+          maxExtrapolationMs: MAX_FLIGHT_EXTRAPOLATION_MS,
         });
         const rawT = progress.rawT;
         const tPos = progress.tPos;
         const tAngle = smoothStep(smoothStep(smoothStep(tPos)));
 
-        const currentFlights = flightsRef.current;
-        const currentTrails = trailsRef.current;
+        const selectedFlightId = selectedIcao24Ref.current;
+        const selectedIdForCull = selectedFlightId?.toLowerCase() ?? null;
+        const fpvId = fpvIcao24Ref.current?.toLowerCase() ?? null;
+        const viewportRevision = viewportRevisionRef.current;
+        const viewportCache = viewportFlightCacheRef.current;
+
+        let currentFlightsForRender: FlightState[];
+        if (
+          viewportCache.source === currentFlights &&
+          viewportCache.revision === viewportRevision &&
+          viewportCache.selectedId === selectedIdForCull &&
+          viewportCache.fpvId === fpvId
+        ) {
+          currentFlightsForRender = viewportCache.result;
+        } else {
+          const bounds = viewportBoundsRef.current;
+          currentFlightsForRender = bounds
+            ? currentFlights.filter((flight) => {
+                const id = flight.icao24.toLowerCase();
+                return (
+                  id === selectedIdForCull ||
+                  id === fpvId ||
+                  isFlightInsideViewport(flight, bounds)
+                );
+              })
+            : currentFlights;
+
+          viewportFlightCacheRef.current = {
+            source: currentFlights,
+            revision: viewportRevision,
+            selectedId: selectedIdForCull,
+            fpvId,
+            result: currentFlightsForRender,
+          };
+        }
 
         // On new poll data: full interpolation (creates new FlightState objects).
         // Between polls: mutate positions in-place (zero object allocations).
         let interpolated: FlightState[];
-        if (currentFlights !== lastFlightsForInterpRef.current) {
+        if (currentFlightsForRender !== lastFlightsForInterpRef.current) {
           interpolated = computeInterpolatedFlights(
-            currentFlights,
+            currentFlightsForRender,
             prevSnapshotsRef.current,
             currSnapshotsRef.current,
             tPos,
@@ -592,7 +796,7 @@ export function FlightLayers({
             animDurationRef.current,
           );
           interpArrayRef.current = interpolated;
-          lastFlightsForInterpRef.current = currentFlights;
+          lastFlightsForInterpRef.current = currentFlightsForRender;
 
           // Rebuild Map only on new poll - updateInterpolatedInPlace mutates
           // the same FlightState objects in-place, so existing Map entries
@@ -606,7 +810,7 @@ export function FlightLayers({
           interpolated = interpArrayRef.current;
           updateInterpolatedInPlace(
             interpolated,
-            currentFlights,
+            currentFlightsForRender,
             prevSnapshotsRef.current,
             currSnapshotsRef.current,
             tPos,
@@ -617,7 +821,6 @@ export function FlightLayers({
         }
 
         // FPV position output - O(1) Map lookup instead of O(n) find
-        const fpvId = fpvIcao24Ref.current?.toLowerCase() ?? null;
         const fpvPosOut = fpvPosRef.current;
         if (fpvPosOut && fpvId) {
           const fpvF = interpolatedMapRef.current.get(fpvId) ?? null;
@@ -651,26 +854,52 @@ export function FlightLayers({
         }
 
         // ── Globe dots ────────────────────────────────────────────────
-        updateGlobeDotsRef.current(isGlobe, currentZoom, now);
-
         const altColors = showAltColorsRef.current;
         const visibleFlights = interpolated;
-        const selectedFlightId = selectedIcao24Ref.current;
         const highDensityTrails =
-          interpolated.length > HIGH_DENSITY_TRAIL_LIMIT;
+          visibleFlights.length > HIGH_DENSITY_TRAIL_LIMIT;
         const renderFullTrails =
           showTrailsRef.current &&
-          (!highDensityTrails || currentZoom >= 5.5);
+          (!highDensityTrails ||
+            currentZoom >= HIGH_DENSITY_TRAIL_ZOOM_RECOVERY);
         const renderSelectedTrail =
           showTrailsRef.current && highDensityTrails && !!selectedFlightId;
-        const trailFlights =
-          renderSelectedTrail && !renderFullTrails && selectedFlightId
-            ? interpolated.filter((flight) => flight.icao24 === selectedFlightId)
-            : interpolated;
-        const trailEntries =
-          renderSelectedTrail && !renderFullTrails && selectedFlightId
-            ? currentTrails.filter((trail) => trail.icao24 === selectedFlightId)
-            : currentTrails;
+        const selectedOnlyId =
+          renderSelectedTrail && !renderFullTrails ? selectedFlightId : null;
+
+        let trailFlights = visibleFlights;
+        if (selectedOnlyId) {
+          const selectedTrailFlights = selectedTrailFlightsRef.current;
+          selectedTrailFlights.length = 0;
+          const selectedFlight = interpolatedMapRef.current.get(selectedOnlyId);
+          if (selectedFlight) selectedTrailFlights.push(selectedFlight);
+          trailFlights = selectedTrailFlights;
+        }
+
+        const trailEntryCache = visibleTrailEntriesCacheRef.current;
+        let trailEntries: TrailEntry[];
+        if (
+          trailEntryCache.source === currentTrails &&
+          trailEntryCache.flights === visibleFlights &&
+          trailEntryCache.selectedOnlyId === selectedOnlyId
+        ) {
+          trailEntries = trailEntryCache.result;
+        } else {
+          const visibleIds = new Set(
+            selectedOnlyId
+              ? [selectedOnlyId]
+              : visibleFlights.map((flight) => flight.icao24),
+          );
+          trailEntries = currentTrails.filter((trail) =>
+            visibleIds.has(trail.icao24),
+          );
+          visibleTrailEntriesCacheRef.current = {
+            source: currentTrails,
+            flights: visibleFlights,
+            selectedOnlyId,
+            result: trailEntries,
+          };
+        }
 
         // Pitch/bank change slowly - recompute at ~10fps regardless of
         // animation frame rate. Values are retained in pitchMapRef/bankMapRef
@@ -796,9 +1025,9 @@ export function FlightLayers({
         // to ScenegraphLayers (3D) above LOD_3D_ZOOM_IN. The hysteresis
         // band (6.5–7.5) prevents rapid flickering at the boundary.
         const force2DHighDensity =
-          interpolated.length > HIGH_DENSITY_3D_LIMIT &&
+          visibleFlights.length > HIGH_DENSITY_3D_LIMIT &&
           !fpvId &&
-          currentZoom < 8;
+          currentZoom < HIGH_DENSITY_3D_ZOOM_LIMIT;
 
         const force2DMarkersEnabled = force2DMarkersRef.current;
 
@@ -821,7 +1050,7 @@ export function FlightLayers({
           // 3D: one ScenegraphLayer per model type
           layers.push(
             ...buildAircraftModelLayers({
-              rawFlights: currentFlights,
+              rawFlights: currentFlightsForRender,
               interpolatedMap: interpolatedMapRef.current,
               frameCounter: visualFrameRef.current,
               dataVersion: dataVersionRef.current,
@@ -890,7 +1119,14 @@ export function FlightLayers({
           );
         }
 
-        overlay.setProps({ layers });
+        overlay.setProps({
+          layers,
+          useDevicePixels:
+            use3DRef.current &&
+            visibleFlights.length <= HIGH_QUALITY_DEVICE_PIXEL_LIMIT
+            ? devicePixelRatioRef.current
+            : 1,
+        });
       } catch (err) {
         if (process.env.NODE_ENV === "development") {
           console.error("[atc] FlightLayers render error:", err);

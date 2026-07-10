@@ -478,19 +478,19 @@ export function FlightCard({
                     }`}
                     aria-label={
                       isFpvActive
-                        ? "Exit first person view"
+                        ? "Stop following aircraft"
                         : canEnterFpv
-                          ? "First person view"
-                          : "First person view unavailable"
+                          ? "Open aircraft follow camera"
+                          : "Aircraft follow camera unavailable"
                     }
                     title={
                       isFpvActive
-                        ? "Exit FPV (F)"
+                        ? "Stop following (F)"
                         : canEnterFpv
-                          ? "First Person View (F)"
+                          ? "Follow aircraft with camera controls (F)"
                           : flight?.onGround
-                            ? "FPV unavailable (aircraft on ground)"
-                            : "FPV unavailable (no position data)"
+                            ? "Follow camera unavailable (aircraft on ground)"
+                            : "Follow camera unavailable (no position data)"
                     }
                   >
                     <IconCell active={isFpvActive}>
@@ -502,8 +502,8 @@ export function FlightCard({
                       className={`min-w-0 flex-1 text-[13px] font-medium ${isFpvActive ? "text-emerald-300/90" : "text-foreground/72"}`}
                     >
                       {isFpvActive
-                        ? "Exit First Person View"
-                        : "First Person View"}
+                        ? "Stop Following"
+                        : "Follow Aircraft"}
                     </span>
                     <ChevronRight
                       className={`h-4 w-4 shrink-0 ${isFpvActive ? "text-emerald-300/45" : "text-foreground/24"}`}

@@ -32,6 +32,7 @@ export type RadarFlight = {
   source: "FlightRadar24 live";
   lastContact: string;
   onGround: boolean;
+  isGlider: boolean;
 };
 
 export type RadarSnapshot = {
@@ -397,6 +398,7 @@ function toRadarFlight(
     source: "FlightRadar24 live",
     lastContact,
     onGround: aircraft.isOnGround,
+    isGlider: aircraft.isGlider,
   };
 }
 

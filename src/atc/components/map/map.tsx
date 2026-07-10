@@ -33,6 +33,14 @@ setMaxParallelImageRequests(16);
 
 const GLOBE_MAX_PITCH = 80;
 
+function getMapPixelRatio(): number {
+  if (typeof window === "undefined") return 1;
+  const memory = (navigator as Navigator & { deviceMemory?: number })
+    .deviceMemory;
+  const cap = memory != null && memory <= 4 ? 1 : 1.5;
+  return Math.max(1, Math.min(window.devicePixelRatio || 1, cap));
+}
+
 type MapContextValue = {
   map: maplibregl.Map | null;
   isLoaded: boolean;
@@ -84,6 +92,11 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
   const containerRef = useRef<HTMLDivElement>(null);
   const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
+  const appliedStyleRef = useRef({
+    mapStyle: DEFAULT_STYLE.style,
+    terrainProfile: "none" as TerrainProfile,
+    globeMode: false,
+  });
 
   useImperativeHandle(ref, () => mapInstance as maplibregl.Map, [mapInstance]);
 
@@ -114,7 +127,9 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
       cancelPendingTileRequestsWhileZooming: true,
       maxTileCacheZoomLevels: 2, // fewer cached zoom levels = less GPU memory for tile textures
       renderWorldCopies: true,
-      pixelRatio: 1, // render at 1x regardless of display DPI - significant GPU savings on HiDPI
+      // Keep models and labels crisp on HiDPI screens, while capping fill-rate
+      // and retaining 1x rendering on memory-constrained devices.
+      pixelRatio: getMapPixelRatio(),
       fadeDuration: 0, // disable tile/symbol fade animations - fewer intermediate render frames
     });
 
@@ -156,6 +171,25 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
   useEffect(() => {
     if (!mapInstance || !isLoaded) return;
 
+    const onStyleLoad = () => {
+      mapInstance.setProjection({ type: globeMode ? "globe" : "mercator" });
+      addAerowayLayers(mapInstance, isDarkRef.current);
+      addBuildings3DLayer(mapInstance, { dark: isDarkRef.current });
+    };
+
+    const appliedStyle = appliedStyleRef.current;
+    const styleAlreadyApplied =
+      Object.is(appliedStyle.mapStyle, mapStyle) &&
+      appliedStyle.terrainProfile === terrainProfile &&
+      appliedStyle.globeMode === globeMode;
+
+    if (styleAlreadyApplied) {
+      onStyleLoad();
+      return;
+    }
+
+    mapInstance.once("style.load", onStyleLoad);
+
     mapInstance.setStyle(
       mapStyle as maplibregl.StyleSpecification | string,
       {
@@ -188,15 +222,7 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
         },
       } as maplibregl.StyleSwapOptions & { transformStyle: unknown },
     );
-
-    // Set projection imperatively so it takes effect immediately.
-    const onStyleLoad = () => {
-      mapInstance.setProjection({ type: globeMode ? "globe" : "mercator" });
-      addAerowayLayers(mapInstance, isDarkRef.current);
-      addBuildings3DLayer(mapInstance, { dark: isDarkRef.current });
-    };
-
-    mapInstance.once("style.load", onStyleLoad);
+    appliedStyleRef.current = { mapStyle, terrainProfile, globeMode };
 
     return () => {
       mapInstance.off("style.load", onStyleLoad);

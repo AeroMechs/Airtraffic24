@@ -17,6 +17,10 @@ import {
   Navigation,
 } from "lucide-react";
 import type { FlightState } from "@/atc/lib/opensky";
+import {
+  AIRCRAFT_CAMERA_MODES,
+  type AircraftCameraMode,
+} from "@/atc/lib/aircraft-camera-mode";
 import { formatCallsign, headingToCardinal } from "@/atc/lib/flight-utils";
 import { lookupAirline } from "@/atc/lib/airlines";
 import { airlineLogoCandidates } from "@/atc/lib/airline-logos";
@@ -42,7 +46,19 @@ import {
 
 type FpvHudProps = {
   flight: FlightState;
+  cameraMode: AircraftCameraMode;
+  onCameraModeChange: (mode: AircraftCameraMode) => void;
   onExit: () => void;
+};
+
+const CAMERA_MODE_DETAILS: Record<
+  AircraftCameraMode,
+  { label: string; description: string }
+> = {
+  rear: { label: "Rear", description: "Smooth chase view" },
+  front: { label: "Front", description: "Look back at aircraft" },
+  top: { label: "Top", description: "North-up overhead view" },
+  free: { label: "Free", description: "Drag to orbit freely" },
 };
 
 const COMPASS_LABELS: Record<number, string> = {
@@ -151,7 +167,12 @@ function CompassRibbon({ heading }: { heading: number | null }) {
   );
 }
 
-export function FpvHud({ flight, onExit }: FpvHudProps) {
+export function FpvHud({
+  flight,
+  cameraMode,
+  onCameraModeChange,
+  onExit,
+}: FpvHudProps) {
   const { settings } = useSettings();
   const altDisplay = altitudeValueFromMeters(
     flight.baroAltitude,
@@ -268,10 +289,48 @@ export function FpvHud({ flight, onExit }: FpvHudProps) {
     >
       <div
         className="flex w-[min(92vw,460px)] flex-col items-center gap-0 overflow-hidden rounded-xl border border-foreground/8 bg-background/70 pb-1 shadow-[0_8px_32px_rgba(0,0,0,0.3)] dark:shadow-[0_8px_32px_rgba(0,0,0,0.6)] backdrop-blur-3xl md:w-max"
-        role="status"
-        aria-live="polite"
-        aria-label="First person view flight instruments"
+        role="region"
+        aria-label="Aircraft follow controls and flight instruments"
       >
+        <div className="flex w-full items-center justify-between gap-2 border-b border-foreground/6 px-2 py-1.5 sm:px-2.5">
+          <div className="min-w-0 px-1">
+            <p className="text-[0.6875rem] font-semibold tracking-wide text-foreground/75">
+              Follow camera
+            </p>
+            <p className="hidden truncate text-[0.5625rem] text-foreground/35 sm:block">
+              {CAMERA_MODE_DETAILS[cameraMode].description}
+            </p>
+          </div>
+          <div
+            className="flex shrink-0 items-center overflow-hidden rounded-lg border border-foreground/8 bg-foreground/3 p-0.5"
+            role="group"
+            aria-label="Camera angle"
+          >
+            {AIRCRAFT_CAMERA_MODES.map((mode) => {
+              const active = cameraMode === mode;
+              return (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onCameraModeChange(mode)}
+                  aria-pressed={active}
+                  aria-label={`${CAMERA_MODE_DETAILS[mode].label} camera: ${CAMERA_MODE_DETAILS[mode].description}`}
+                  className={`h-12 rounded-md px-2 text-[0.6875rem] font-semibold sm:h-7 sm:px-2.5 ${
+                    active
+                      ? "bg-foreground/10 text-foreground/90"
+                      : "text-foreground/42 hover:bg-foreground/5 hover:text-foreground/70"
+                  } focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sky-500`}
+                >
+                  {CAMERA_MODE_DETAILS[mode].label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="sr-only" aria-live="polite">
+            {CAMERA_MODE_DETAILS[cameraMode].label} camera active
+          </p>
+        </div>
+
         <div className="w-full border-b border-foreground/6 px-2 pt-1.5 pb-0.5 sm:px-2.5">
           <div
             className="mx-auto w-fit overflow-hidden rounded-md"
@@ -424,8 +483,8 @@ export function FpvHud({ flight, onExit }: FpvHudProps) {
           <button
             onClick={onExit}
             className="flex items-center gap-1 px-2.5 py-1.5 text-foreground/40 transition-colors hover:bg-foreground/5 hover:text-foreground/60 sm:px-2.5"
-            aria-label="Exit first person view"
-            title="Exit FPV (Esc)"
+            aria-label="Stop following aircraft"
+            title="Stop following (Esc)"
           >
             <X className="h-3.5 w-3.5" />
           </button>

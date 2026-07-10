@@ -55,6 +55,7 @@ import { MobileFlightToast } from "@/atc/components/ui/mobile-flight-toast";
 import { MAP_STYLES, type MapStyle } from "@/atc/lib/map-styles";
 import type { City } from "@/atc/lib/cities";
 import type { FlightState } from "@/atc/lib/opensky";
+import type { AircraftCameraMode } from "@/atc/lib/aircraft-camera-mode";
 
 import { fetchFlightByHex, fetchFlightByCallsign } from "@/atc/lib/flight-api";
 import { expandFlightQuery, flightQueryMatches } from "@/atc/lib/airlines";
@@ -132,6 +133,8 @@ function FlightTrackerInner({
   const [selectedIcao24, setSelectedIcao24] = useState<string | null>(null);
   const [followIcao24, setFollowIcao24] = useState<string | null>(null);
   const [fpvIcao24, setFpvIcao24] = useState<string | null>(null);
+  const [fpvCameraMode, setFpvCameraMode] =
+    useState<AircraftCameraMode>("rear");
   const [leftPanel, setLeftPanel] = useState<AtcLeftPanel | null>(null);
 
   const pendingFpvRef = useRef<string | null>(resolveInitialFpv());
@@ -238,14 +241,24 @@ function FlightTrackerInner({
   }, [activeCity.coordinates, radarCountryCoverage, userLocation]);
   const feedRadiusNm = radarCountryCoverage?.radiusNm ?? 250;
   const feedLimit = radarCountryCoverage ? 5_000 : undefined;
-  const { flights, rateLimited, retryIn } =
-    useGlobalRadarFlights({
-      enabled: true,
-      mode: trafficMode,
-      center: feedCenter,
-      radiusNm: feedRadiusNm,
-      limit: feedLimit,
-    });
+  const {
+    flights,
+    initialLoading,
+    refreshing,
+    rateLimited,
+    retryIn,
+    source: radarSource,
+    stale: radarStale,
+    unavailable: radarUnavailable,
+    lastUpdatedAt,
+    error: radarError,
+  } = useGlobalRadarFlights({
+    enabled: true,
+    mode: trafficMode,
+    center: feedCenter,
+    radiusNm: feedRadiusNm,
+    limit: feedLimit,
+  });
 
   // Both the airspace and weather radar overlays are scoped to ~2×
   // the flight fetch radius so we don't pull tiles for the entire
@@ -477,6 +490,7 @@ function FlightTrackerInner({
       if (flight.onGround) return;
       setLeftPanel(null);
       setFpvSeedCenter({ lng: flight.longitude, lat: flight.latitude });
+      setFpvCameraMode("rear");
       setFpvIcao24((prev) => {
         if (prev === targetIcao24) {
           setFpvSeedCenter(null);
@@ -587,6 +601,7 @@ function FlightTrackerInner({
         f.latitude != null
       ) {
         setFpvSeedCenter({ lng: f.longitude, lat: f.latitude });
+        setFpvCameraMode("rear");
         setFpvIcao24(f.icao24);
         setLeftPanel(null);
       } else if (!isMobile) {
@@ -751,6 +766,7 @@ function FlightTrackerInner({
             cityZoom={cityZoom}
             followFlight={followFlight}
             fpvFlight={fpvFlightOrCached}
+            fpvCameraMode={fpvCameraMode}
             fpvPositionRef={fpvPositionRef}
           />
           <MapStateTracker
@@ -855,6 +871,14 @@ function FlightTrackerInner({
               cityName={statusLocationName}
               cityIata={activeCity.iata}
               cityCoordinates={activeCity.coordinates}
+              flightCount={displayFlights.length}
+              initialLoading={initialLoading}
+              refreshing={refreshing}
+              radarSource={radarSource}
+              radarStale={radarStale}
+              radarUnavailable={radarUnavailable}
+              radarError={radarError}
+              lastUpdatedAt={lastUpdatedAt}
               rateLimited={rateLimited}
               retryIn={retryIn}
               onNorthUp={handleNorthUp}
@@ -950,7 +974,12 @@ function FlightTrackerInner({
 
       <AnimatePresence>
         {fpvIcao24 && fpvFlightOrCached && (
-          <FpvHud flight={fpvFlightOrCached} onExit={handleExitFpv} />
+          <FpvHud
+            flight={fpvFlightOrCached}
+            cameraMode={fpvCameraMode}
+            onCameraModeChange={setFpvCameraMode}
+            onExit={handleExitFpv}
+          />
         )}
       </AnimatePresence>
     </main>

@@ -196,7 +196,7 @@ export const MAP_STYLES: MapStyle[] = [
 ];
 
 export const DEFAULT_STYLE =
-  MAP_STYLES.find((style) => style.id === "voyager-labels") ?? MAP_STYLES[0];
+  MAP_STYLES.find((style) => style.id === "dark") ?? MAP_STYLES[0];
 
 export type AttributionEntry = {
   label: string;

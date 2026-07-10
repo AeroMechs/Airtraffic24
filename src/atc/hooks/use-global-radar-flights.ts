@@ -26,10 +26,16 @@ type RadarFlight = {
   tailNumber: string;
   source: "FlightRadar24 live" | "FlightRadar24 cached";
   onGround: boolean;
+  isGlider: boolean;
 };
 
 type RadarResponse = {
   data?: {
+    generatedAt?: string;
+    source?:
+      | "FlightRadar24 live"
+      | "FlightRadar24 cached"
+      | "FlightRadar24 partial live";
     flights: RadarFlight[];
     provider: {
       name: string;
@@ -42,26 +48,40 @@ type RadarResponse = {
 const GLOBAL_POLL_INTERVAL_MS = 30_000;
 const NEARBY_POLL_INTERVAL_MS = 5_000;
 const BACKOFF_INTERVAL_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 52_000;
 const GLOBAL_TRAFFIC_LIMIT = 8_000;
 const NEARBY_TRAFFIC_LIMIT = 1_000;
 const FT_TO_METERS = 0.3048;
 const KNOTS_TO_METERS_PER_SECOND = 0.514444;
 const FPM_TO_METERS_PER_SECOND = 0.00508;
 
-function syntheticIcao24(id: string, index: number) {
-  let hash = index + 1;
-  for (let character = 0; character < id.length; character += 1) {
-    hash = (hash * 31 + id.charCodeAt(character)) & 0xffffff;
+function fallbackTrackId(flight: RadarFlight) {
+  const identity =
+    flight.tailNumber !== "-"
+      ? `registration:${flight.tailNumber}`
+      : flight.callsign
+        ? `callsign:${flight.callsign}`
+        : flight.flightNumber
+          ? `flight:${flight.flightNumber}`
+          : `provider:${flight.id}`;
+  let hash = 2_166_136_261;
+  for (let character = 0; character < identity.length; character += 1) {
+    hash ^= identity.charCodeAt(character);
+    hash = Math.imul(hash, 16_777_619) >>> 0;
   }
   return hash.toString(16).padStart(6, "0").slice(-6);
 }
 
-function categoryFromType(aircraftType: string) {
+function categoryFromType(
+  aircraftType: string,
+  isGlider: boolean,
+): number | null {
+  if (isGlider) return 9;
   const type = aircraftType.toUpperCase();
   if (/A38|A34|B74|B77|B78|A35|A33|B76/.test(type)) return 6;
   if (/A2[012]|A3[12]|B73|B75|C919/.test(type)) return 4;
   if (/AT[47]|DH8|SF34/.test(type)) return 3;
-  return 3;
+  return null;
 }
 
 function typeCodeFromAircraft(aircraftType: string) {
@@ -69,11 +89,11 @@ function typeCodeFromAircraft(aircraftType: string) {
   return match?.[0] ?? null;
 }
 
-function toFlightState(flight: RadarFlight, index: number): FlightState {
+function toFlightState(flight: RadarFlight): FlightState {
   const altitudeMeters = Math.max(0, flight.altitudeFt * FT_TO_METERS);
 
   return {
-    icao24: (flight.icao24 || syntheticIcao24(flight.id, index)).toLowerCase(),
+    icao24: (flight.icao24 || fallbackTrackId(flight)).toLowerCase(),
     callsign: flight.callsign || flight.flightNumber,
     originCountry: flight.airline,
     longitude: flight.longitude,
@@ -87,7 +107,7 @@ function toFlightState(flight: RadarFlight, index: number): FlightState {
     squawk: null,
     spiFlag: false,
     positionSource: "adsb",
-    category: categoryFromType(flight.aircraftType),
+    category: categoryFromType(flight.aircraftType, flight.isGlider),
     typeCode: typeCodeFromAircraft(flight.aircraftType),
     registration: flight.tailNumber !== "-" ? flight.tailNumber : null,
     typeDescription: flight.aircraftType,
@@ -114,11 +134,24 @@ export function useGlobalRadarFlights({
 }) {
   const [flights, setFlights] = useState<FlightState[]>([]);
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(false);
   const [rateLimited, setRateLimited] = useState(false);
   const [retryIn, setRetryIn] = useState(0);
   const [source, setSource] = useState<string | null>(null);
+  const [providerStatus, setProviderStatus] = useState<
+    "Live" | "Degraded" | null
+  >(null);
+  const [providerDetail, setProviderDetail] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const requestSequenceRef = useRef(0);
+  const flightsRef = useRef<FlightState[]>([]);
+  const dataQueryRef = useRef<string | null>(null);
+  const completedQueryRef = useRef<string | null>(null);
   const fetchDataRef = useRef<() => void>(() => {});
 
   const query = useMemo(() => {
@@ -144,6 +177,47 @@ export function useGlobalRadarFlights({
     timerRef.current = null;
   }, []);
 
+  const stopRetryCountdown = useCallback(() => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+  }, []);
+
+  const clearRetryCountdown = useCallback(() => {
+    stopRetryCountdown();
+    setRetryIn(0);
+  }, [stopRetryCountdown]);
+
+  const startRetryCountdown = useCallback(
+    (delayMs: number) => {
+      clearRetryCountdown();
+      const retryAt = Date.now() + delayMs;
+
+      const update = () => {
+        const seconds = Math.max(
+          0,
+          Math.ceil((retryAt - Date.now()) / 1_000),
+        );
+        setRetryIn(seconds);
+        if (seconds === 0 && countdownRef.current) {
+          clearInterval(countdownRef.current);
+          countdownRef.current = null;
+        }
+      };
+
+      update();
+      countdownRef.current = setInterval(update, 1_000);
+    },
+    [clearRetryCountdown],
+  );
+
+  const cancelCurrentRequest = useCallback(() => {
+    requestSequenceRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
+
   const scheduleNext = useCallback(
     (delayMs: number) => {
       clearTimer();
@@ -164,49 +238,125 @@ export function useGlobalRadarFlights({
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    const requestSequence = ++requestSequenceRef.current;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
+    const isCurrentRequest = () =>
+      requestSequence === requestSequenceRef.current;
+    const markFailure = (message: string) => {
+      setError(message);
+      setProviderStatus("Degraded");
+      setProviderDetail(message);
+      setUnavailable(
+        dataQueryRef.current !== query || flightsRef.current.length === 0,
+      );
+    };
 
     try {
       setLoading(true);
+      setInitialLoading(completedQueryRef.current !== query);
       setRateLimited(false);
-      setRetryIn(0);
+      clearRetryCountdown();
+      setError(null);
 
       const response = await fetch(`/api/radar/flights?${query}`, {
         cache: mode === "global" ? "default" : "no-store",
         signal: controller.signal,
       });
+      if (!isCurrentRequest()) return;
 
       if (response.status === 429) {
         setRateLimited(true);
-        setRetryIn(Math.round(BACKOFF_INTERVAL_MS / 1_000));
+        markFailure("The radar provider is rate limited. Retrying shortly.");
+        startRetryCountdown(BACKOFF_INTERVAL_MS);
         scheduleNext(BACKOFF_INTERVAL_MS);
         return;
       }
 
       if (!response.ok) {
+        markFailure(`Radar request failed (${response.status}).`);
         scheduleNext(BACKOFF_INTERVAL_MS);
         return;
       }
 
       const payload = (await response.json()) as RadarResponse;
+      if (!isCurrentRequest()) return;
       if (!payload.data) {
+        markFailure("The radar provider returned an invalid response.");
         scheduleNext(BACKOFF_INTERVAL_MS);
         return;
       }
 
+      const nextFlights = payload.data.flights.map(toFlightState);
+      const isDegraded = payload.data.provider.status === "Degraded";
+      const canPreserveLastKnown =
+        isDegraded &&
+        nextFlights.length === 0 &&
+        dataQueryRef.current === query &&
+        flightsRef.current.length > 0;
+
+      completedQueryRef.current = query;
       setSource(payload.data.provider.name);
-      setFlights(payload.data.flights.map(toFlightState));
+      setProviderStatus(payload.data.provider.status);
+      setProviderDetail(payload.data.provider.detail);
+      setUnavailable(isDegraded && nextFlights.length === 0);
+
+      if (!canPreserveLastKnown) {
+        flightsRef.current = nextFlights;
+        dataQueryRef.current = query;
+        setFlights(nextFlights);
+        const generatedAt = payload.data.generatedAt
+          ? Date.parse(payload.data.generatedAt)
+          : Number.NaN;
+        setLastUpdatedAt(
+          isDegraded && nextFlights.length === 0
+            ? null
+            : Number.isFinite(generatedAt)
+              ? generatedAt
+              : Date.now(),
+        );
+      }
+
+      if (isDegraded && nextFlights.length === 0) {
+        setError(payload.data.provider.detail);
+      }
       scheduleNext(
         mode === "global"
           ? GLOBAL_POLL_INTERVAL_MS
           : NEARBY_POLL_INTERVAL_MS,
       );
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") return;
+    } catch (caught) {
+      if (requestSequence !== requestSequenceRef.current) return;
+      if (caught instanceof Error && caught.name === "AbortError" && !timedOut) {
+        return;
+      }
+      markFailure(
+        timedOut
+          ? "The radar provider took too long to respond. Retrying shortly."
+          : caught instanceof Error
+            ? caught.message
+            : "The radar request failed.",
+      );
       scheduleNext(BACKOFF_INTERVAL_MS);
     } finally {
-      setLoading(false);
+      clearTimeout(timeout);
+      if (requestSequence === requestSequenceRef.current) {
+        abortRef.current = null;
+        setLoading(false);
+        setInitialLoading(false);
+      }
     }
-  }, [enabled, mode, query, scheduleNext]);
+  }, [
+    clearRetryCountdown,
+    enabled,
+    mode,
+    query,
+    scheduleNext,
+    startRetryCountdown,
+  ]);
 
   useEffect(() => {
     fetchDataRef.current = () => void fetchData();
@@ -215,7 +365,8 @@ export function useGlobalRadarFlights({
   useEffect(() => {
     if (!enabled) {
       clearTimer();
-      abortRef.current?.abort();
+      stopRetryCountdown();
+      cancelCurrentRequest();
       return;
     }
 
@@ -226,24 +377,50 @@ export function useGlobalRadarFlights({
         void fetchData();
       } else {
         clearTimer();
-        abortRef.current?.abort();
+        cancelCurrentRequest();
+        setLoading(false);
+        setInitialLoading(false);
+      }
+    }
+
+    function onOnline() {
+      if (document.visibilityState === "visible") {
+        clearTimer();
+        void fetchData();
       }
     }
 
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("online", onOnline);
     return () => {
       window.clearTimeout(kickoffTimer);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("online", onOnline);
       clearTimer();
-      abortRef.current?.abort();
+      stopRetryCountdown();
+      cancelCurrentRequest();
     };
-  }, [clearTimer, enabled, fetchData]);
+  }, [
+    cancelCurrentRequest,
+    clearTimer,
+    enabled,
+    fetchData,
+    stopRetryCountdown,
+  ]);
 
   return {
     flights: enabled ? flights : [],
     loading: enabled ? loading : false,
+    initialLoading: enabled ? initialLoading : false,
+    refreshing: enabled ? loading && !initialLoading : false,
     rateLimited: enabled ? rateLimited : false,
     retryIn: enabled ? retryIn : 0,
     source: enabled ? source : null,
+    providerStatus: enabled ? providerStatus : null,
+    providerDetail: enabled ? providerDetail : null,
+    stale: enabled ? providerStatus === "Degraded" : false,
+    unavailable: enabled ? unavailable : false,
+    lastUpdatedAt: enabled ? lastUpdatedAt : null,
+    error: enabled ? error : null,
   };
 }

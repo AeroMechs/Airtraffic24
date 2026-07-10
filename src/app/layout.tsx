@@ -17,7 +17,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full antialiased" style={{ colorScheme: "dark" }}>
+    <html
+      lang="en"
+      className="dark h-full antialiased"
+      style={{ colorScheme: "dark" }}
+    >
       <body className="min-h-full overflow-hidden bg-[#05090d] text-white">
         <TooltipProvider>{children}</TooltipProvider>
         <Toaster richColors position="top-right" />

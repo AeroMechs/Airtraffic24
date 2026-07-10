@@ -15,6 +15,7 @@ import {
 import type { AltitudeDisplayMode } from "@/atc/lib/altitude-display-mode";
 import type { City } from "@/atc/lib/cities";
 import type { FlightState } from "@/atc/lib/opensky";
+import type { AircraftCameraMode } from "@/atc/lib/aircraft-camera-mode";
 import { altitudeToElevation } from "@/atc/lib/flight-utils";
 
 const DEFAULT_ZOOM = 9.2;
@@ -27,6 +28,40 @@ const FPV_BEARING_ALPHA = 0.06;
 const FPV_ZOOM_ALPHA = 0.03;
 const FPV_IDLE_RECENTER_MS = 1200;
 const FPV_EASE_IN_MS = 1000;
+const FREE_IDLE_RECENTER_MS = 260;
+const FREE_EASE_IN_MS = 450;
+const FPV_VIEW_CHANGE_DURATION = 700;
+
+type LockedCameraMode = Exclude<AircraftCameraMode, "free">;
+
+const CAMERA_MODE_CONFIG: Record<
+  LockedCameraMode,
+  { pitch: number; bearingOffset: number | null; zoomOffset: number }
+> = {
+  rear: {
+    pitch: FPV_PITCH,
+    bearingOffset: 0,
+    zoomOffset: FPV_DISTANCE_ZOOM_OFFSET,
+  },
+  front: {
+    pitch: 58,
+    bearingOffset: 180,
+    zoomOffset: FPV_DISTANCE_ZOOM_OFFSET,
+  },
+  top: {
+    pitch: 0,
+    bearingOffset: null,
+    zoomOffset: 0.45,
+  },
+};
+
+function normalizeBearing(bearing: number): number {
+  return ((bearing % 360) + 360) % 360;
+}
+
+function lockedModeConfig(cameraMode: AircraftCameraMode) {
+  return cameraMode === "free" ? null : CAMERA_MODE_CONFIG[cameraMode];
+}
 
 type FpvPosition = { lng: number; lat: number; alt: number; track: number };
 
@@ -39,6 +74,7 @@ export function useFpvCamera(
   fpvPosRef: MutableRefObject<MutableRefObject<FpvPosition | null> | undefined>,
   isFpvActiveRef: MutableRefObject<boolean>,
   prevFpvRef: MutableRefObject<string | null>,
+  cameraMode: AircraftCameraMode = "rear",
   altitudeDisplayMode: AltitudeDisplayMode = "presentation",
 ) {
   useEffect(() => {
@@ -51,10 +87,13 @@ export function useFpvCamera(
 
     const fpv = fpvFlightRef.current;
     const fpvKey = fpv?.icao24 ?? null;
-    if (fpvKey === prevFpvRef.current) return;
+    const modeKey = fpvKey ? `${fpvKey}:${cameraMode}` : null;
 
     const wasFpv = prevFpvRef.current !== null;
-    prevFpvRef.current = fpvKey;
+    const isViewChange =
+      fpvKey !== null &&
+      prevFpvRef.current?.startsWith(`${fpvKey}:`) === true;
+    prevFpvRef.current = modeKey;
 
     if (!fpv || fpv.longitude == null || fpv.latitude == null) {
       isFpvActiveRef.current = false;
@@ -77,13 +116,22 @@ export function useFpvCamera(
     isFpvActiveRef.current = true;
     setMapInteractionsEnabled(map, true);
 
-    const bearing = Number.isFinite(fpv.trueTrack)
+    const flightBearing = Number.isFinite(fpv.trueTrack)
       ? fpv.trueTrack!
       : map.getBearing();
     const safeAltitude = Number.isFinite(fpv.baroAltitude)
       ? fpv.baroAltitude!
       : 5000;
-    const zoom = fpvZoomForAltitude(safeAltitude) - FPV_DISTANCE_ZOOM_OFFSET;
+    const modeConfig = lockedModeConfig(cameraMode);
+    const bearing = modeConfig
+      ? modeConfig.bearingOffset === null
+        ? 0
+        : normalizeBearing(flightBearing + modeConfig.bearingOffset)
+      : map.getBearing();
+    const zoom = modeConfig
+      ? fpvZoomForAltitude(safeAltitude) - modeConfig.zoomOffset
+      : map.getZoom();
+    const pitch = modeConfig?.pitch ?? map.getPitch();
 
     let fpvOffsetX = 0;
     let fpvOffsetY = 0;
@@ -91,15 +139,15 @@ export function useFpvCamera(
     map.flyTo({
       center: [normalizeLng(fpv.longitude), fpv.latitude],
       zoom,
-      pitch: FPV_PITCH,
+      pitch,
       bearing,
-      duration: FPV_FLY_DURATION,
+      duration: isViewChange ? FPV_VIEW_CHANGE_DURATION : FPV_FLY_DURATION,
       essential: true,
     });
 
     let frameId: number | null = null;
     let startupTimer: ReturnType<typeof setTimeout> | null = null;
-    let prevBearing = bearing;
+    let prevBearing = flightBearing;
 
     let lastInteractionTime = 0;
     let recenterStartTime = 0;
@@ -139,7 +187,10 @@ export function useFpvCamera(
     function onFpvVisibilityResume() {
       if (document.visibilityState === "visible" && wasHidden) {
         wasHidden = false;
-        if (map) prevBearing = map.getBearing();
+        const resumedTrack = fpvFlightRef.current?.trueTrack;
+        if (resumedTrack != null && Number.isFinite(resumedTrack)) {
+          prevBearing = resumedTrack;
+        }
         fpvOffsetX = 0;
         fpvOffsetY = 0;
         lastInteractionTime = 0;
@@ -188,9 +239,13 @@ export function useFpvCamera(
       const now = performance.now();
       const idleMs =
         lastInteractionTime === 0
-          ? FPV_IDLE_RECENTER_MS + 1
+          ? Math.max(FPV_IDLE_RECENTER_MS, FREE_IDLE_RECENTER_MS) + 1
           : now - lastInteractionTime;
-      const isIdle = idleMs > FPV_IDLE_RECENTER_MS;
+      const idleRecenterMs =
+        cameraMode === "free" ? FREE_IDLE_RECENTER_MS : FPV_IDLE_RECENTER_MS;
+      const easeInMs =
+        cameraMode === "free" ? FREE_EASE_IN_MS : FPV_EASE_IN_MS;
+      const isIdle = idleMs > idleRecenterMs;
 
       let trackingStrength = 0;
       if (isIdle) {
@@ -198,7 +253,7 @@ export function useFpvCamera(
           recenterStartTime = now;
         }
         const easeElapsed = now - recenterStartTime;
-        const t = Math.min(easeElapsed / FPV_EASE_IN_MS, 1);
+        const t = Math.min(easeElapsed / easeInMs, 1);
         trackingStrength = smoothstep(t);
       }
 
@@ -211,8 +266,10 @@ export function useFpvCamera(
 
       if (trackingStrength > 0.001) {
         const safeAlt = Number.isFinite(posAlt) ? posAlt : 5000;
-        const targetZoom =
-          fpvZoomForAltitude(safeAlt) - FPV_DISTANCE_ZOOM_OFFSET;
+        const activeModeConfig = lockedModeConfig(cameraMode);
+        const targetZoom = activeModeConfig
+          ? fpvZoomForAltitude(safeAlt) - activeModeConfig.zoomOffset
+          : map.getZoom();
         const currentZoom = map.getZoom();
         const zoomAlpha = FPV_ZOOM_ALPHA * trackingStrength;
         const smoothZoom = lerp(currentZoom, targetZoom, zoomAlpha);
@@ -258,13 +315,22 @@ export function useFpvCamera(
         // toward the live heading.  Avoids the double-smoothing oscillation
         // that occurred when prevBearing was intermediated separately.
         const currentBearing = map.getBearing();
+        const targetBearing = activeModeConfig
+          ? activeModeConfig.bearingOffset === null
+            ? 0
+            : normalizeBearing(
+                liveBearing + activeModeConfig.bearingOffset,
+              )
+          : currentBearing;
         const bearingToLive =
-          ((liveBearing - currentBearing + 540) % 360) - 180;
+          ((targetBearing - currentBearing + 540) % 360) - 180;
         const newMapBearing =
           currentBearing + bearingToLive * FPV_BEARING_ALPHA * trackingStrength;
 
         const pitchAlpha = 0.05 * trackingStrength;
-        const newPitch = lerp(currentPitch, FPV_PITCH, pitchAlpha);
+        const newPitch = activeModeConfig
+          ? lerp(currentPitch, activeModeConfig.pitch, pitchAlpha)
+          : currentPitch;
 
         programmaticMove = true;
         try {
@@ -273,9 +339,13 @@ export function useFpvCamera(
               lerpLng(center.lng, targetLng, centerAlpha),
               lerp(center.lat, targetLat, centerAlpha),
             ],
-            bearing: newMapBearing,
-            zoom: smoothZoom,
-            pitch: newPitch,
+            ...(activeModeConfig
+              ? {
+                  bearing: newMapBearing,
+                  zoom: smoothZoom,
+                  pitch: newPitch,
+                }
+              : {}),
             offset: [fpvOffsetX, fpvOffsetY],
             duration: 0,
             animate: false,
@@ -292,7 +362,7 @@ export function useFpvCamera(
     startupTimer = setTimeout(() => {
       startupTimer = null;
       frameId = requestAnimationFrame(keepInFrame);
-    }, FPV_FLY_DURATION + 300);
+    }, (isViewChange ? FPV_VIEW_CHANGE_DURATION : FPV_FLY_DURATION) + 120);
 
     return () => {
       if (startupTimer) clearTimeout(startupTimer);
@@ -306,5 +376,16 @@ export function useFpvCamera(
         isFpvActiveRef.current = false;
       }
     };
-  }, [map, isLoaded, fpvFlight?.icao24, city]);
+  }, [
+    map,
+    isLoaded,
+    fpvFlight?.icao24,
+    city,
+    cameraMode,
+    altitudeDisplayMode,
+    fpvFlightRef,
+    fpvPosRef,
+    isFpvActiveRef,
+    prevFpvRef,
+  ]);
 }

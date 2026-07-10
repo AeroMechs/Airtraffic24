@@ -20,7 +20,7 @@ export type DeckGLOverlay = MapboxOverlay & {
 
 export const DEFAULT_ANIM_DURATION_MS = 30_000;
 export const MIN_ANIM_DURATION_MS = 8_000;
-export const MAX_ANIM_DURATION_MS = 45_000;
+export const MAX_ANIM_DURATION_MS = 60_000;
 export const TELEPORT_THRESHOLD = 0.3;
 export const TRAIL_BELOW_AIRCRAFT_METERS = 40;
 export const STARTUP_TRAIL_POLLS = 3;
