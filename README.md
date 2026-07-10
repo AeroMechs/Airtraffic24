@@ -2,7 +2,7 @@
 
 Airtraffic24 is a standalone Next.js worldwide live-flight radar. It renders a full-screen satellite map with live aircraft positions, global and nearby coverage modes, search, route and aircraft details, airport boards, weather, trails, map styles, camera controls, and optional ATC or airspace overlays.
 
-The application contains no SkyLine managed-flight records, role system, airline operations dashboard, or synthetic fleet fallback. If the primary provider is temporarily unavailable, it keeps the latest real snapshot for up to five minutes and clearly marks the feed as degraded.
+The application contains no SkyLine managed-flight records, role system, airline operations dashboard, or synthetic fleet fallback. If the primary provider is temporarily unavailable, it keeps the latest real snapshot for up to five minutes and clearly marks the feed as degraded..
 
 ## Run
 
