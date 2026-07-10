@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 30;
+
 const FETCH_TIMEOUT_MS = 5_000;
 const AIRPORT_DATA_TIMEOUT_MS = 5_000;
 const JETAPI_TIMEOUT_MS = 5_000;

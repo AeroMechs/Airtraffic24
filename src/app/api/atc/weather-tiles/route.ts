@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 15;
+
 // ── RainViewer Weather Tile Proxy ──────────────────────────────────────
 //
 // Proxies radar tile requests to RainViewer's tile cache.  This avoids

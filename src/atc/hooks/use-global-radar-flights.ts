@@ -171,7 +171,7 @@ export function useGlobalRadarFlights({
       setRetryIn(0);
 
       const response = await fetch(`/api/radar/flights?${query}`, {
-        cache: "no-store",
+        cache: mode === "global" ? "default" : "no-store",
         signal: controller.signal,
       });
 
@@ -194,9 +194,7 @@ export function useGlobalRadarFlights({
       }
 
       setSource(payload.data.provider.name);
-      if (payload.data.flights.length > 0) {
-        setFlights(payload.data.flights.map(toFlightState));
-      }
+      setFlights(payload.data.flights.map(toFlightState));
       scheduleNext(
         mode === "global"
           ? GLOBAL_POLL_INTERVAL_MS

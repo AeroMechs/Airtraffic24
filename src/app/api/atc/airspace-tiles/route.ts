@@ -5,6 +5,9 @@ import {
   getOpenAipApiKey,
 } from "@/atc/lib/airspace-config";
 
+export const runtime = "nodejs";
+export const maxDuration = 30;
+
 // ── OpenAIP Airspace MVT Proxy ──────────────────────────────────────
 //
 // Proxies Mapbox Vector Tile requests to OpenAIP's tiles API, keeping

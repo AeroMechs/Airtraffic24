@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 15;
+
 // ── Airport Photo Proxy ────────────────────────────────────────────────
 //
 // Resolves an airport (by IATA + name) to a Wikipedia thumbnail URL.

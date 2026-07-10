@@ -7,6 +7,7 @@ const HEX_REGEX = /^[0-9a-f]{6}$/;
 export const dynamic = "force-dynamic";
 export const fetchCache = "default-no-store";
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const hex = request.nextUrl.searchParams.get("hex")?.trim().toLowerCase();

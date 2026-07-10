@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 15;
+
 // ── METAR Proxy ────────────────────────────────────────────────────────
 //
 // Proxies METAR requests to NOAA Aviation Weather API.

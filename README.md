@@ -7,7 +7,7 @@ The application contains no SkyLine managed-flight records, role system, airline
 ## Run
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -20,6 +20,12 @@ npm run build
 npm run start -- -p 3007
 ```
 
+## Deploy to Vercel
+
+Import the repository into Vercel with the Next.js framework preset. The
+committed `vercel.json` uses `npm ci` and `npm run build`; no output-directory
+override is required. The project targets Node.js 24.
+
 ## Routes
 
 - `/` - full-screen worldwide radar.
@@ -30,7 +36,7 @@ npm run start -- -p 3007
 ## Validation
 
 ```bash
-npx tsc --noEmit
+npm run typecheck
 npm run lint
 npm run build
 npm audit --omit=dev

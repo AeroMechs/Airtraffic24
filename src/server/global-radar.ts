@@ -8,6 +8,9 @@ import { lookupAirline } from "@/atc/lib/airlines";
 
 export type RadarMode = "global" | "nearby";
 
+export const MAX_GLOBAL_RADAR_FLIGHTS = 8_000;
+export const MAX_NEARBY_RADAR_FLIGHTS = 5_000;
+
 export type RadarFlight = {
   id: string;
   icao24?: string;
@@ -34,7 +37,10 @@ export type RadarFlight = {
 export type RadarSnapshot = {
   mode: RadarMode;
   generatedAt: string;
-  source: "FlightRadar24 live" | "FlightRadar24 cached";
+  source:
+    | "FlightRadar24 live"
+    | "FlightRadar24 cached"
+    | "FlightRadar24 partial live";
   sourceDetail: string;
   center: { latitude: number; longitude: number; label: string };
   flights: RadarFlight[];
@@ -77,19 +83,46 @@ type CacheEntry = {
 type CachedResult = {
   flights: RadarFlight[];
   stale: boolean;
+  partial?: boolean;
+};
+
+type FetchResult = {
+  flights: RadarFlight[];
+  complete: boolean;
 };
 
 const DEFAULT_CENTER = { latitude: 24, longitude: 18, label: "Global" };
-const GLOBAL_LIMIT = 8_000;
+const GLOBAL_LIMIT = MAX_GLOBAL_RADAR_FLIGHTS;
 const NEARBY_LIMIT = 1_000;
 const CACHE_TTL_MS = 30_000;
 const STALE_TTL_MS = 5 * 60_000;
 const TILE_TIMEOUT_MS = 7_000;
+const REQUEST_BUDGET_MS = 45_000;
 const TILE_CONCURRENCY = 2;
 const TILE_MIN_USEFUL_ROWS = 120;
+const MAX_CACHE_ENTRIES = 64;
 
 const cache = new Map<string, CacheEntry>();
 const pending = new Map<string, Promise<CachedResult>>();
+
+function readCacheEntry(key: string) {
+  const entry = cache.get(key);
+  if (!entry) return undefined;
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry;
+}
+
+function writeCacheEntry(key: string, entry: CacheEntry) {
+  cache.delete(key);
+  cache.set(key, entry);
+
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+}
 
 const PRESETS = {
   default: {
@@ -385,11 +418,21 @@ function dedupe(flights: RadarFlight[]) {
   return result;
 }
 
-async function fetchTile(tile: RadarTile) {
+async function fetchTile(
+  tile: RadarTile,
+  deadlineAt: number,
+): Promise<FetchResult> {
   const collected: RadarFlight[] = [];
   const minUsefulRows = tile.minUsefulRows ?? TILE_MIN_USEFUL_ROWS;
+  let complete = true;
 
   for (const preset of tile.presets) {
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      complete = false;
+      break;
+    }
+
     try {
       const aircraft = await withTimeout(
         fetchFromRadar(
@@ -400,7 +443,7 @@ async function fetchTile(tile: RadarTile) {
           undefined,
           PRESETS[preset],
         ),
-        TILE_TIMEOUT_MS,
+        Math.min(TILE_TIMEOUT_MS, remainingMs),
       );
       const flights = aircraft
         .map((item, index) =>
@@ -411,14 +454,21 @@ async function fetchTile(tile: RadarTile) {
       collected.push(...flights);
       if (flights.length >= minUsefulRows) break;
     } catch {
+      if (Date.now() >= deadlineAt) complete = false;
       continue;
     }
   }
 
-  return dedupe(collected);
+  return { flights: dedupe(collected), complete };
 }
 
-async function fetchUncached({ limit, center, radiusNm }: RadarQuery) {
+async function fetchUncached({
+  limit,
+  center,
+  radiusNm,
+}: RadarQuery): Promise<FetchResult> {
+  const deadlineAt = Date.now() + REQUEST_BUDGET_MS;
+
   if (center && radiusNm) {
     const nearbyTile: RadarTile = {
       id: "nearby",
@@ -426,11 +476,17 @@ async function fetchUncached({ limit, center, radiusNm }: RadarQuery) {
       presets: ["adsbOnly", "noFaa", "default", "allTraffic"],
       minUsefulRows: 20,
     };
-    const direct = (await fetchTile(nearbyTile)).filter(
+    const directResult = await fetchTile(nearbyTile, deadlineAt);
+    const direct = directResult.flights.filter(
       (flight) => distanceNm(center, flight) <= radiusNm,
     );
 
-    if (direct.length >= 20) return dedupe(direct).slice(0, limit);
+    if (direct.length >= 20) {
+      return {
+        flights: dedupe(direct).slice(0, limit),
+        complete: directResult.complete,
+      };
+    }
 
     const regionalTiles = GLOBAL_TILES.filter(
       (tile) => tile.id !== "world" && tileContains(tile, center),
@@ -438,25 +494,39 @@ async function fetchUncached({ limit, center, radiusNm }: RadarQuery) {
     const regional = await runWithConcurrency(
       regionalTiles,
       2,
-      async (tile) => fetchTile({ ...tile, minUsefulRows: 40 }),
+      async (tile) =>
+        fetchTile({ ...tile, minUsefulRows: 40 }, deadlineAt),
     );
-    return dedupe([...direct, ...regional.flat()])
-      .filter((flight) => distanceNm(center, flight) <= radiusNm)
-      .slice(0, limit);
+    return {
+      flights: dedupe([
+        ...direct,
+        ...regional.flatMap((result) => result.flights),
+      ])
+        .filter((flight) => distanceNm(center, flight) <= radiusNm)
+        .slice(0, limit),
+      complete:
+        directResult.complete && regional.every((result) => result.complete),
+    };
   }
 
   const tileResults = await runWithConcurrency(
     GLOBAL_TILES,
     TILE_CONCURRENCY,
-    fetchTile,
+    async (tile) => fetchTile(tile, deadlineAt),
   );
-  return dedupe(tileResults.flat()).slice(0, limit);
+  return {
+    flights: dedupe(tileResults.flatMap((result) => result.flights)).slice(
+      0,
+      limit,
+    ),
+    complete: tileResults.every((result) => result.complete),
+  };
 }
 
 async function fetchRadarFlights(query: RadarQuery): Promise<CachedResult> {
   const key = cacheKey(query);
   const now = Date.now();
-  const cached = cache.get(key);
+  const cached = readCacheEntry(key);
 
   if (cached && cached.expiresAt > now) {
     return { flights: cached.flights, stale: false };
@@ -466,21 +536,25 @@ async function fetchRadarFlights(query: RadarQuery): Promise<CachedResult> {
   if (inflight) return inflight;
 
   const request = fetchUncached(query)
-    .then((flights) => {
-      if (flights.length > 0) {
-        cache.set(key, {
+    .then((result) => {
+      if (result.complete && result.flights.length > 0) {
+        writeCacheEntry(key, {
           expiresAt: Date.now() + CACHE_TTL_MS,
           staleUntil: Date.now() + STALE_TTL_MS,
-          flights,
+          flights: result.flights,
         });
-        return { flights, stale: false };
+        return { flights: result.flights, stale: false };
       }
 
       if (cached && cached.staleUntil > Date.now()) {
         return { flights: cached.flights, stale: true };
       }
 
-      return { flights: [], stale: true };
+      return {
+        flights: result.flights,
+        stale: true,
+        partial: result.flights.length > 0 && !result.complete,
+      };
     })
     .catch(() => {
       if (cached && cached.staleUntil > Date.now()) {
@@ -509,8 +583,14 @@ export async function getGlobalRadarSnapshot({
 }): Promise<RadarSnapshot> {
   const isNearby = mode === "nearby";
   const effectiveLimit = isNearby
-    ? Math.min(Math.max(limit ?? NEARBY_LIMIT, 25), 5_000)
-    : Math.min(Math.max(limit ?? GLOBAL_LIMIT, 250), 10_000);
+    ? Math.min(
+        Math.max(limit ?? NEARBY_LIMIT, 25),
+        MAX_NEARBY_RADAR_FLIGHTS,
+      )
+    : Math.min(
+        Math.max(limit ?? GLOBAL_LIMIT, 250),
+        MAX_GLOBAL_RADAR_FLIGHTS,
+      );
   const center = isNearby
     ? { latitude, longitude, label: "Nearby" }
     : DEFAULT_CENTER;
@@ -519,11 +599,15 @@ export async function getGlobalRadarSnapshot({
     center: isNearby ? center : undefined,
     radiusNm: isNearby ? radiusNm : undefined,
   });
-  const source = result.stale
-    ? "FlightRadar24 cached"
-    : "FlightRadar24 live";
+  const source = result.partial
+    ? "FlightRadar24 partial live"
+    : result.stale
+      ? "FlightRadar24 cached"
+      : "FlightRadar24 live";
   const status = result.stale ? "Degraded" : "Live";
-  const detail = result.stale
+  const detail = result.partial
+    ? "The live provider deadline was reached; showing the available real positions without replacing the latest complete cache."
+    : result.stale
     ? result.flights.length > 0
       ? "The live provider is temporarily unavailable; showing the latest real cached positions."
       : "The live provider is temporarily unavailable. No synthetic aircraft are displayed."
@@ -544,7 +628,11 @@ export async function getGlobalRadarSnapshot({
       onGround: result.flights.filter((flight) => flight.onGround).length,
     },
     provider: {
-      name: result.stale ? "FlightRadar24 cached feed" : "FlightRadar24 live feed",
+      name: result.partial
+        ? "FlightRadar24 partial live feed"
+        : result.stale
+          ? "FlightRadar24 cached feed"
+          : "FlightRadar24 live feed",
       status,
       detail,
     },

@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 15;
+
 // ── Nominatim Geocode Proxy ────────────────────────────────────────────
 //
 // Proxies OpenStreetMap Nominatim search to:

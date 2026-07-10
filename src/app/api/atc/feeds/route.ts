@@ -6,6 +6,9 @@ import {
   iataToIcao,
 } from "@/atc/lib/atc-lookup";
 
+export const runtime = "nodejs";
+export const maxDuration = 10;
+
 /**
  * GET /api/atc/feeds
  *

@@ -4,6 +4,9 @@ import {
   resolveRouteFromOpenDatabasesDetailed,
 } from "@/atc/lib/route-resolver";
 
+export const runtime = "nodejs";
+export const maxDuration = 30;
+
 const ROUTE_HIT_CACHE_CONTROL =
   "public, max-age=300, s-maxage=900, stale-while-revalidate=1800";
 const ROUTE_MISS_CACHE_CONTROL = "public, max-age=60, s-maxage=120";

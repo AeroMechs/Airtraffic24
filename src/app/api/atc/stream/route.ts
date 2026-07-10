@@ -1,6 +1,10 @@
 import { type NextRequest } from "next/server";
 import { VALID_MOUNT_POINTS } from "@/atc/lib/atc-feeds";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 300;
+
 /**
  * GET /api/atc/stream?mount={mountPoint}
  *
@@ -9,13 +13,13 @@ import { VALID_MOUNT_POINTS } from "@/atc/lib/atc-feeds";
  *
  * Security:
  *   - Mount point validated against static allowlist (SSRF prevention)
- *   - Connection timeout: 30 seconds
- *   - Max stream duration: 4 hours
+ *   - Connection timeout: 12 seconds
+ *   - Max stream duration: 285 seconds with client reconnect
  *   - Simple per-request rate limiting via headers
  */
 
-/** Maximum stream duration in milliseconds (4 hours). */
-const MAX_STREAM_DURATION_MS = 4 * 60 * 60 * 1000;
+/** Stay below Vercel's 300-second Hobby function limit. */
+const MAX_STREAM_DURATION_MS = 285_000;
 /** Connection timeout for upstream fetch (12 seconds). */
 const CONNECT_TIMEOUT_MS = 12_000;
 
@@ -94,19 +98,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Set up max duration cutoff
-    const durationController = new AbortController();
-    const durationTimer = setTimeout(
-      () => durationController.abort(),
-      MAX_STREAM_DURATION_MS,
-    );
-
-    // Pipe the upstream stream through, respecting both abort signals
+    // Pipe the upstream stream through and cancel pending reads before Vercel's
+    // function deadline so the client can reconnect cleanly.
     const reader = upstream.body.getReader();
+    const durationTimer = setTimeout(() => {
+      controller.abort();
+      reader.cancel().catch(() => {});
+    }, MAX_STREAM_DURATION_MS);
     const stream = new ReadableStream({
       async pull(ctrl) {
         try {
-          if (durationController.signal.aborted) {
+          if (controller.signal.aborted) {
             reader.cancel().catch(() => {});
             clearTimeout(durationTimer);
             ctrl.close();
@@ -114,11 +116,13 @@ export async function GET(request: NextRequest) {
           }
           const { value, done } = await reader.read();
           if (done) {
+            clearTimeout(durationTimer);
             ctrl.close();
           } else {
             ctrl.enqueue(value);
           }
         } catch {
+          clearTimeout(durationTimer);
           reader.cancel().catch(() => {});
           ctrl.close();
         }

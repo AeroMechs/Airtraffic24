@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { READSB_FETCH_TIMEOUT_MS, MAX_RADIUS_NM } from "@/atc/lib/flight-api-types";
 
+export const runtime = "nodejs";
+export const maxDuration = 15;
+
 // ── Multi-Provider Proxy ───────────────────────────────────────────────
 //
 // Proxies readsb-format requests to adsb.lol or airplanes.live.

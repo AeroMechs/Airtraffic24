@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 15;
+
 // ── TAF Proxy ──────────────────────────────────────────────────────────
 //
 // Proxies Terminal Area Forecast (TAF) requests to the NOAA Aviation
