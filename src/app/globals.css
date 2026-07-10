@@ -1,0 +1,418 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:where(.skyline-dark-mode-disabled *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --font-sans: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-geist-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --background: oklch(0.982 0.009 239);
+  --foreground: oklch(0.168 0.018 236);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.168 0.018 236);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.168 0.018 236);
+  --primary: oklch(0.52 0.155 244);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.946 0.021 239);
+  --secondary-foreground: oklch(0.26 0.046 240);
+  --muted: oklch(0.956 0.01 239);
+  --muted-foreground: oklch(0.486 0.018 238);
+  --accent: oklch(0.925 0.035 244);
+  --accent-foreground: oklch(0.235 0.058 240);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.888 0.015 238);
+  --input: oklch(0.888 0.015 238);
+  --ring: oklch(0.61 0.14 244);
+  --chart-1: oklch(0.58 0.15 244);
+  --chart-2: oklch(0.64 0.145 154);
+  --chart-3: oklch(0.74 0.16 73);
+  --chart-4: oklch(0.61 0.2 31);
+  --chart-5: oklch(0.32 0.025 238);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.966 0.015 239);
+  --sidebar-foreground: oklch(0.168 0.018 236);
+  --sidebar-primary: oklch(0.52 0.155 244);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.925 0.035 244);
+  --sidebar-accent-foreground: oklch(0.235 0.058 240);
+  --sidebar-border: oklch(0.888 0.015 238);
+  --sidebar-ring: oklch(0.61 0.14 244);
+  --ui-fg: 0 0 0;
+  --ui-bg: 255 255 255;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01", "ss03";
+  }
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+@layer utilities {
+  .ops-shell {
+    background:
+      linear-gradient(180deg, rgba(244, 250, 255, 0.96) 0%, rgba(248, 251, 254, 0.98) 38%, rgba(244, 247, 251, 1) 100%),
+      linear-gradient(90deg, rgba(2, 132, 199, 0.055) 0 1px, transparent 1px 100%),
+      linear-gradient(180deg, rgba(2, 132, 199, 0.045) 0 1px, transparent 1px 100%);
+    background-size: auto, 56px 56px, 56px 56px;
+  }
+}
+
+@utility ops-surface {
+  background: color-mix(in oklch, var(--card) 94%, var(--accent) 6%);
+  box-shadow:
+    0 0 0 1px oklch(0.18 0.02 236 / 0.07),
+    0 1px 2px -1px oklch(0.18 0.02 236 / 0.08),
+    0 14px 34px -30px oklch(0.18 0.02 236 / 0.36);
+}
+
+@utility ops-inset {
+  background: color-mix(in oklch, var(--background) 78%, var(--accent) 22%);
+  box-shadow: inset 0 0 0 1px oklch(0.18 0.02 236 / 0.06);
+}
+
+@utility ops-panel {
+  border-radius: var(--radius-xl);
+  background: color-mix(in oklch, var(--card) 94%, var(--accent) 6%);
+  box-shadow:
+    0 0 0 1px oklch(0.18 0.02 236 / 0.07),
+    0 1px 2px -1px oklch(0.18 0.02 236 / 0.08),
+    0 20px 40px -34px oklch(0.18 0.02 236 / 0.42);
+}
+
+@layer utilities {
+  .atc-radar-shell {
+    --background: oklch(0.115 0.018 238);
+    --foreground: oklch(0.955 0.012 238);
+    --card: oklch(0.145 0.018 238);
+    --card-foreground: oklch(0.955 0.012 238);
+    --popover: oklch(0.125 0.018 238);
+    --popover-foreground: oklch(0.955 0.012 238);
+    --primary: oklch(0.74 0.13 218);
+    --primary-foreground: oklch(0.105 0.018 238);
+    --secondary: oklch(0.2 0.02 238);
+    --secondary-foreground: oklch(0.9 0.015 238);
+    --muted: oklch(0.19 0.018 238);
+    --muted-foreground: oklch(0.68 0.015 238);
+    --accent: oklch(0.22 0.028 218);
+    --accent-foreground: oklch(0.92 0.018 220);
+    --border: oklch(0.28 0.022 238);
+    --input: oklch(0.28 0.022 238);
+    --ring: oklch(0.72 0.14 218);
+    --sidebar: oklch(0.105 0.016 238);
+    --sidebar-foreground: oklch(0.94 0.012 238);
+    --sidebar-primary: oklch(0.74 0.13 218);
+    --sidebar-primary-foreground: oklch(0.105 0.018 238);
+    --sidebar-accent: oklch(0.205 0.024 238);
+    --sidebar-accent-foreground: oklch(0.94 0.012 238);
+    --sidebar-border: oklch(0.27 0.02 238);
+    --sidebar-ring: oklch(0.72 0.14 218);
+    --ui-fg: 238 246 255;
+    --ui-bg: 7 12 18;
+    color-scheme: dark;
+  }
+
+  .atc-map-surface {
+    transform: translate3d(0, 0, 0);
+    transform-origin: left center;
+    box-shadow: none;
+    transition-property: transform, border-radius;
+    transition-duration: 660ms;
+    transition-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+    will-change: transform;
+    contain: layout paint style;
+    isolation: isolate;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+  }
+
+  .atc-left-chrome {
+    transform: translate3d(0, 0, 0);
+    transition: transform 640ms cubic-bezier(0.19, 1, 0.22, 1);
+    will-change: transform;
+  }
+
+  .atc-map-centered-chrome {
+    transform: translate3d(-50%, 0, 0);
+    transition: transform 640ms cubic-bezier(0.19, 1, 0.22, 1);
+    will-change: transform;
+  }
+
+  @media (min-width: 640px) {
+    .atc-map-surface[data-panel-open="true"] {
+      border-top-left-radius: 2.5rem;
+      border-bottom-left-radius: 2.5rem;
+      transform: translate3d(
+        calc(var(--atc-left-sidebar-width) - 4px),
+        0,
+        0
+      );
+    }
+
+    .atc-left-chrome[data-panel-open="true"] {
+      transform: translate3d(var(--atc-left-chrome-shift), 0, 0);
+    }
+
+    .atc-map-centered-chrome[data-panel-open="true"] {
+      transform: translate3d(
+        calc(-50% + var(--atc-map-center-shift)),
+        0,
+        0
+      );
+    }
+  }
+
+  .radar-surface::after {
+    content: "";
+    position: absolute;
+    inset: -42%;
+    z-index: 1;
+    pointer-events: none;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0deg 292deg,
+      rgba(56, 189, 248, 0.16) 318deg,
+      transparent 342deg
+    );
+    mix-blend-mode: screen;
+    transform-origin: center;
+    animation: radar-sweep 12s linear infinite;
+  }
+
+  .radar-aircraft-marker {
+    will-change: border-color, box-shadow, background-color;
+  }
+
+  .radar-selected-pulse {
+    animation: radar-selected-pulse 1.8s ease-out infinite;
+  }
+
+  .radar-detail-enter,
+  .panel-enter {
+    animation: panel-enter 180ms ease-out both;
+  }
+
+  .event-enter {
+    animation: event-enter 900ms ease-out both;
+  }
+
+  .status-live .live-dot {
+    animation: live-dot 1.8s ease-in-out infinite;
+  }
+
+  .radar-refresh-spin {
+    animation: radar-refresh-spin 900ms linear infinite;
+  }
+}
+
+@keyframes radar-sweep {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes radar-selected-pulse {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.88);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes event-enter {
+  0% {
+    background: rgba(240, 249, 255, 1);
+    border-color: rgba(14, 165, 233, 0.35);
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    background: #fff;
+    border-color: rgba(9, 9, 11, 0.1);
+    transform: translateY(0);
+  }
+}
+
+@keyframes live-dot {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes radar-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.maplibregl-ctrl-attrib,
+.maplibregl-ctrl-logo {
+  display: none !important;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.atc-cmdk [cmdk-input] {
+  border: none;
+  outline: none;
+  background: transparent;
+}
+
+.atc-cmdk [cmdk-group-heading] {
+  padding: 14px 16px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: rgb(var(--ui-fg) / 0.35);
+  user-select: none;
+}
+
+.atc-cmdk [cmdk-list] {
+  overscroll-behavior: contain;
+}
+
+.atc-cmdk [cmdk-group] + [cmdk-group] {
+  padding-top: 2px;
+}
+
+.atc-cmdk [cmdk-empty] {
+  display: flex;
+}
+
+.atc-cmdk .search-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-radius: 14px;
+  padding: 11px 14px;
+  margin: 0 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.08s ease;
+  outline: none;
+  user-select: none;
+}
+
+.atc-cmdk .search-item[data-selected="true"] {
+  background: rgb(var(--ui-fg) / 0.055);
+}
+
+.atc-cmdk
+  [cmdk-item][data-selected="true"]
+  .group-data-\[selected\=true\]\/item\:opacity-100 {
+  opacity: 1;
+}
+
+.atc-cmdk .search-item[data-disabled="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.atc-cmdk .search-item:active:not([data-disabled="true"]) {
+  background: rgb(var(--ui-fg) / 0.075);
+  transform: scale(0.995);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .radar-surface::after,
+  .radar-selected-pulse,
+  .radar-detail-enter,
+  .panel-enter,
+  .event-enter,
+  .status-live .live-dot,
+  .radar-refresh-spin {
+    animation: none !important;
+    transition-duration: 1ms !important;
+    transform: none !important;
+  }
+
+  .atc-map-surface,
+  .atc-left-chrome,
+  .atc-map-centered-chrome {
+    transition-duration: 1ms !important;
+  }
+}

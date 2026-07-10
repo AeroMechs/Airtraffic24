@@ -1,0 +1,43 @@
+"use client";
+
+import { Component, type ReactNode } from "react";
+
+type Props = { children: ReactNode };
+type State = { error: Error | null };
+
+export class ErrorBoundary extends Component<Props, State> {
+  state: State = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    if (process.env.NODE_ENV === "development") {
+      console.error("[atc] Uncaught error:", error, info.componentStack);
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div
+          role="alert"
+          className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-background text-foreground"
+        >
+          <p className="text-lg font-semibold">Something went wrong</p>
+          <p className="max-w-md text-center text-sm text-foreground/50">
+            {this.state.error.message}
+          </p>
+          <button
+            onClick={() => this.setState({ error: null })}
+            className="rounded-lg bg-foreground/10 px-4 py-2 text-sm font-medium transition-colors hover:bg-foreground/20"
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}

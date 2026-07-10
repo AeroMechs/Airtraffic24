@@ -1,0 +1,318 @@
+"use client";
+
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+
+import type { AltitudeDisplayMode } from "@/atc/lib/altitude-display-mode";
+import {
+  normalizeRadarCountryCode,
+  WORLD_RADAR_COUNTRY,
+} from "@/atc/lib/radar-countries";
+import { clamp } from "@/atc/lib/utils";
+
+export type OrbitDirection = "clockwise" | "counter-clockwise";
+export type UnitSystem = "aviation" | "metric" | "imperial";
+
+export type Settings = {
+  autoOrbit: boolean;
+  orbitSpeed: number;
+  orbitDirection: OrbitDirection;
+  showTrails: boolean;
+  trailThickness: number;
+  trailDistance: number;
+  showShadows: boolean;
+  showAltitudeColors: boolean;
+  altitudeDisplayMode: AltitudeDisplayMode;
+  unitSystem: UnitSystem;
+  fpvChaseDistance: number;
+  globeMode: boolean;
+  showAirspace: boolean;
+  airspaceOpacity: number;
+  showAtcPanel: boolean;
+  showWeatherRadar: boolean;
+  weatherRadarOpacity: number;
+  showDebugData: boolean;
+  radarCountry: string;
+};
+
+export const TRAIL_THICKNESS_MIN = 0.5;
+export const TRAIL_THICKNESS_MAX = 8;
+export const TRAIL_DISTANCE_MIN = 12;
+export const TRAIL_DISTANCE_MAX = 120;
+const FPV_CHASE_DISTANCE_MIN = 0.003;
+const FPV_CHASE_DISTANCE_MAX = 0.01;
+export const AIRSPACE_OPACITY_MIN = 0.25;
+export const AIRSPACE_OPACITY_MAX = 1.0;
+export const WEATHER_RADAR_OPACITY_MIN = 0.15;
+export const WEATHER_RADAR_OPACITY_MAX = 0.9;
+
+export function normalizeSettings(input: Settings): Settings {
+  return {
+    ...input,
+    orbitSpeed: Number.isFinite(input.orbitSpeed)
+      ? clamp(input.orbitSpeed, 0.02, 0.5)
+      : DEFAULT_SETTINGS.orbitSpeed,
+    trailThickness: Number.isFinite(input.trailThickness)
+      ? clamp(
+          input.trailThickness,
+          TRAIL_THICKNESS_MIN,
+          TRAIL_THICKNESS_MAX,
+        )
+      : DEFAULT_SETTINGS.trailThickness,
+    trailDistance: Number.isFinite(input.trailDistance)
+      ? Math.round(
+          clamp(input.trailDistance, TRAIL_DISTANCE_MIN, TRAIL_DISTANCE_MAX),
+        )
+      : DEFAULT_SETTINGS.trailDistance,
+    fpvChaseDistance: Number.isFinite(input.fpvChaseDistance)
+      ? clamp(
+          input.fpvChaseDistance,
+          FPV_CHASE_DISTANCE_MIN,
+          FPV_CHASE_DISTANCE_MAX,
+        )
+      : DEFAULT_SETTINGS.fpvChaseDistance,
+    airspaceOpacity: Number.isFinite(input.airspaceOpacity)
+      ? clamp(
+          input.airspaceOpacity,
+          AIRSPACE_OPACITY_MIN,
+          AIRSPACE_OPACITY_MAX,
+        )
+      : DEFAULT_SETTINGS.airspaceOpacity,
+    weatherRadarOpacity: Number.isFinite(input.weatherRadarOpacity)
+      ? clamp(
+          input.weatherRadarOpacity,
+          WEATHER_RADAR_OPACITY_MIN,
+          WEATHER_RADAR_OPACITY_MAX,
+        )
+      : DEFAULT_SETTINGS.weatherRadarOpacity,
+    radarCountry: normalizeRadarCountryCode(input.radarCountry),
+  };
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  autoOrbit: true,
+  orbitSpeed: 0.06,
+  orbitDirection: "clockwise",
+  showTrails: true,
+  trailThickness: 1.0,
+  trailDistance: 48,
+  showShadows: true,
+  showAltitudeColors: true,
+  altitudeDisplayMode: "presentation",
+  unitSystem: "aviation",
+  fpvChaseDistance: 0.0048,
+  globeMode: false,
+  showAirspace: false,
+  airspaceOpacity: 0.78,
+  showAtcPanel: false,
+  showWeatherRadar: false,
+  weatherRadarOpacity: 0.5,
+  showDebugData: false,
+  radarCountry: WORLD_RADAR_COUNTRY,
+};
+
+const STORAGE_KEY = "atc:settings";
+const STORAGE_VERSION = 7;
+const WRITE_DEBOUNCE_MS = 300;
+
+const LEGACY_TRAIL_THICKNESS_DEFAULT = 1.3;
+const LEGACY_TRAIL_DISTANCE_DEFAULT = 80;
+const PREVIOUS_TRAIL_THICKNESS_DEFAULT = 0.5;
+const PREVIOUS_TRAIL_DISTANCE_DEFAULT = 48;
+
+type StorageEnvelope = {
+  v: number;
+  data: Settings;
+};
+
+export function migrateSettingsDefaults(
+  input: Settings,
+  fromVersion: number,
+): Settings {
+  if (fromVersion >= STORAGE_VERSION) {
+    return input;
+  }
+
+  const next = { ...input };
+
+  if (
+    fromVersion < 4 &&
+    next.trailThickness === LEGACY_TRAIL_THICKNESS_DEFAULT &&
+    next.trailDistance === LEGACY_TRAIL_DISTANCE_DEFAULT
+  ) {
+    next.trailThickness = DEFAULT_SETTINGS.trailThickness;
+    next.trailDistance = DEFAULT_SETTINGS.trailDistance;
+  }
+
+  if (
+    fromVersion < 5 &&
+    next.trailThickness === PREVIOUS_TRAIL_THICKNESS_DEFAULT &&
+    next.trailDistance === PREVIOUS_TRAIL_DISTANCE_DEFAULT
+  ) {
+    next.trailThickness = DEFAULT_SETTINGS.trailThickness;
+    next.trailDistance = DEFAULT_SETTINGS.trailDistance;
+  }
+
+  return next;
+}
+
+function isValidSettings(obj: unknown): obj is Settings {
+  if (typeof obj !== "object" || obj === null) return false;
+  const s = obj as Record<string, unknown>;
+  return (
+    typeof s.autoOrbit === "boolean" &&
+    typeof s.orbitSpeed === "number" &&
+    Number.isFinite(s.orbitSpeed) &&
+    (s.orbitDirection === "clockwise" ||
+      s.orbitDirection === "counter-clockwise") &&
+    typeof s.showTrails === "boolean" &&
+    typeof s.trailThickness === "number" &&
+    Number.isFinite(s.trailThickness) &&
+    s.trailThickness >= TRAIL_THICKNESS_MIN &&
+    s.trailThickness <= TRAIL_THICKNESS_MAX &&
+    typeof s.trailDistance === "number" &&
+    Number.isFinite(s.trailDistance) &&
+    s.trailDistance >= TRAIL_DISTANCE_MIN &&
+    s.trailDistance <= TRAIL_DISTANCE_MAX &&
+    typeof s.showShadows === "boolean" &&
+    typeof s.showAltitudeColors === "boolean" &&
+    (s.altitudeDisplayMode === "presentation" ||
+      s.altitudeDisplayMode === "realistic") &&
+    (s.unitSystem === "aviation" ||
+      s.unitSystem === "metric" ||
+      s.unitSystem === "imperial") &&
+    typeof s.fpvChaseDistance === "number" &&
+    Number.isFinite(s.fpvChaseDistance) &&
+    s.fpvChaseDistance >= FPV_CHASE_DISTANCE_MIN &&
+    s.fpvChaseDistance <= FPV_CHASE_DISTANCE_MAX &&
+    typeof s.globeMode === "boolean" &&
+    typeof s.showAirspace === "boolean" &&
+    typeof s.airspaceOpacity === "number" &&
+    Number.isFinite(s.airspaceOpacity) &&
+    s.airspaceOpacity >= AIRSPACE_OPACITY_MIN &&
+    s.airspaceOpacity <= AIRSPACE_OPACITY_MAX &&
+    typeof s.showAtcPanel === "boolean" &&
+    typeof s.showWeatherRadar === "boolean" &&
+    typeof s.weatherRadarOpacity === "number" &&
+    Number.isFinite(s.weatherRadarOpacity) &&
+    s.weatherRadarOpacity >= WEATHER_RADAR_OPACITY_MIN &&
+    s.weatherRadarOpacity <= WEATHER_RADAR_OPACITY_MAX &&
+    typeof s.showDebugData === "boolean" &&
+    typeof s.radarCountry === "string"
+  );
+}
+
+function loadSettings(): Settings {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return DEFAULT_SETTINGS;
+    const envelope: StorageEnvelope = JSON.parse(raw);
+    if (envelope.v !== STORAGE_VERSION || !isValidSettings(envelope.data)) {
+      const merged = { ...DEFAULT_SETTINGS };
+      if (typeof envelope.data === "object" && envelope.data !== null) {
+        const d = envelope.data as Record<string, unknown>;
+        for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
+          if (key in d && typeof d[key] === typeof DEFAULT_SETTINGS[key]) {
+            (merged as Record<string, unknown>)[key] = d[key];
+          }
+        }
+      }
+      const version = Number.isFinite(envelope.v) ? envelope.v : 0;
+      return normalizeSettings(migrateSettingsDefaults(merged, version));
+    }
+    return normalizeSettings(
+      migrateSettingsDefaults(
+        { ...DEFAULT_SETTINGS, ...envelope.data },
+        envelope.v,
+      ),
+    );
+  } catch {
+    // Corrupted or unreadable localStorage - fall back to defaults
+    return DEFAULT_SETTINGS;
+  }
+}
+
+function saveSettings(settings: Settings): void {
+  if (typeof window === "undefined") return;
+  try {
+    const envelope: StorageEnvelope = { v: STORAGE_VERSION, data: settings };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(envelope));
+  } catch {
+    // localStorage may be full or unavailable (private browsing)
+  }
+}
+
+type SettingsContextValue = {
+  settings: Settings;
+  update: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  reset: () => void;
+};
+
+const SettingsContext = createContext<SettingsContextValue | null>(null);
+
+const subscribeNoop = () => () => {};
+let settingsCache: Settings | undefined;
+
+function getSettingsSnapshot(): Settings {
+  if (!settingsCache) settingsCache = loadSettings();
+  return settingsCache;
+}
+
+export function useSettings() {
+  const ctx = useContext(SettingsContext);
+  if (!ctx) throw new Error("useSettings must be used within SettingsProvider");
+  return ctx;
+}
+
+export function SettingsProvider({ children }: { children: ReactNode }) {
+  const hydrated = useSyncExternalStore(
+    subscribeNoop,
+    getSettingsSnapshot,
+    () => DEFAULT_SETTINGS,
+  );
+
+  const [override, setOverride] = useState<Settings | undefined>();
+  const settings = override ?? hydrated;
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!override) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(
+      () => saveSettings(override),
+      WRITE_DEBOUNCE_MS,
+    );
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [override]);
+
+  const update = useCallback(
+    <K extends keyof Settings>(key: K, value: Settings[K]) => {
+      setOverride((prev) => {
+        const base = prev ?? getSettingsSnapshot();
+        return normalizeSettings({ ...base, [key]: value });
+      });
+    },
+    [],
+  );
+
+  const reset = useCallback(() => {
+    setOverride({ ...DEFAULT_SETTINGS });
+  }, []);
+
+  return (
+    <SettingsContext.Provider value={{ settings, update, reset }}>
+      {children}
+    </SettingsContext.Provider>
+  );
+}

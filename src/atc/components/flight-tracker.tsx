@@ -1,0 +1,1038 @@
+"use client";
+
+import {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  type CSSProperties,
+} from "react";
+import { AnimatePresence, motion } from "motion/react";
+import dynamic from "next/dynamic";
+import { ErrorBoundary } from "@/atc/components/error-boundary";
+import { Map as MapView } from "@/atc/components/map/map";
+import { CameraController } from "@/atc/components/map/camera-controller";
+import { AirportLayer } from "@/atc/components/map/airport-layer";
+import { AirspaceLayer } from "@/atc/components/map/airspace-layer";
+import { WeatherRadarLayer } from "@/atc/components/map/weather-radar-layer";
+import { UserLocationMarker } from "@/atc/components/map/user-location-marker";
+import { FlightLayers } from "@/atc/components/map/flight-layers";
+import {
+  MapStateTracker,
+  type MapViewState,
+} from "@/atc/components/map/map-state-tracker";
+import { FpvHud } from "@/atc/components/ui/fpv-hud";
+const ControlPanel = dynamic(() =>
+  import("@/atc/components/ui/control-panel").then((mod) => mod.ControlPanel),
+);
+import {
+  ATC_LEFT_SIDEBAR_WIDTH,
+  AtcLeftSidebar,
+  type AtcLeftPanel,
+} from "@/atc/components/ui/atc-left-sidebar";
+import { AltitudeLegend } from "@/atc/components/ui/altitude-legend";
+import { CameraControls } from "@/atc/components/ui/camera-controls";
+import { StatusBar } from "@/atc/components/ui/status-bar";
+import { MapAttribution } from "@/atc/components/ui/map-attribution";
+import { AtcPlayerBar } from "@/atc/components/ui/atc-panel";
+const AirportInfoCard = dynamic(() =>
+  import("@/atc/components/ui/airport-info-card").then(
+    (mod) => mod.AirportInfoCard,
+  ),
+);
+import { Brand } from "@/atc/components/flight-tracker-brand";
+import { SettingsProvider, useSettings } from "@/atc/hooks/use-settings";
+import { useKeyboardShortcuts } from "@/atc/hooks/use-keyboard-shortcuts";
+import { useGlobalRadarFlights } from "@/atc/hooks/use-global-radar-flights";
+import { useTrailSystem } from "@/atc/hooks/use-trail-system";
+import { useFlightMonitors } from "@/atc/hooks/use-flight-monitors";
+import { useAtcStream } from "@/atc/hooks/use-atc-stream";
+import { useIsMobile } from "@/atc/hooks/use-is-mobile";
+import { useAirportBoard } from "@/atc/hooks/use-airport-board";
+import { MobileFlightToast } from "@/atc/components/ui/mobile-flight-toast";
+import { MAP_STYLES, type MapStyle } from "@/atc/lib/map-styles";
+import type { City } from "@/atc/lib/cities";
+import type { FlightState } from "@/atc/lib/opensky";
+
+import { fetchFlightByHex, fetchFlightByCallsign } from "@/atc/lib/flight-api";
+import { expandFlightQuery, flightQueryMatches } from "@/atc/lib/airlines";
+import { findNearestAirport, airportToCity } from "@/atc/lib/airports";
+import {
+  computeAirspaceBounds,
+  FPV_BOUNDS_SNAP_DEG,
+  FPV_AIRSPACE_RADIUS_DEG,
+  AIRSPACE_RADIUS_MULTIPLIER,
+} from "@/atc/lib/airspace-style";
+import type { PickingInfo } from "@deck.gl/core";
+import {
+  DEFAULT_CITY,
+  DEFAULT_STYLE,
+  subscribeNoop,
+  resolveInitialCity,
+  syncCityToUrl,
+  syncFpvToUrl,
+  resolveInitialFpv,
+  loadMapStyle,
+  saveMapStyle,
+} from "@/atc/components/flight-tracker-utils";
+import {
+  pickRandomAirportCity,
+  cityFromFlight,
+} from "@/atc/components/flight-tracker-random";
+import {
+  getRadarCountryCoverage,
+  WORLD_RADAR_COUNTRY,
+} from "@/atc/lib/radar-countries";
+
+type FlightTrackerProps = {
+  airspaceAvailable?: boolean;
+  aircraftShadows?: boolean;
+  initialMapStyleId?: string;
+  force2DMarkers?: boolean;
+  /**
+   * City resolved on the server from the URL (e.g. /city/[code]).
+   * When provided, this takes precedence over any client-side URL parsing
+   * to avoid hydration flicker and keep SSR output in sync with the client.
+   */
+  initialCity?: City;
+};
+
+function FlightTrackerInner({
+  airspaceAvailable = true,
+  aircraftShadows = true,
+  initialCity,
+  initialMapStyleId,
+  force2DMarkers = false,
+}: FlightTrackerProps) {
+  // useSyncExternalStore with a no-op subscriber reads localStorage once
+  // on the client while returning DEFAULT_CITY on the server - SSR-safe
+  // hydration without useEffect flicker.
+  //
+  // When the server already resolved a city (from a /city/[code] route),
+  // use that as both the server snapshot and the client snapshot so
+  // hydration matches and we skip one client-side URL parse.
+  const hydratedCity = useSyncExternalStore(
+    subscribeNoop,
+    initialCity ? () => initialCity : resolveInitialCity,
+    () => initialCity ?? DEFAULT_CITY,
+  );
+  const hydratedStyle = useSyncExternalStore(
+    subscribeNoop,
+    loadMapStyle,
+    () => DEFAULT_STYLE,
+  );
+
+  const [cityOverride, setCityOverride] = useState<City | undefined>();
+  const [styleOverride, setStyleOverride] = useState<MapStyle | undefined>();
+  const [globalTrafficMode, setGlobalTrafficMode] = useState<
+    "global" | "nearby"
+  >("global");
+  const [selectedIcao24, setSelectedIcao24] = useState<string | null>(null);
+  const [followIcao24, setFollowIcao24] = useState<string | null>(null);
+  const [fpvIcao24, setFpvIcao24] = useState<string | null>(null);
+  const [leftPanel, setLeftPanel] = useState<AtcLeftPanel | null>(null);
+
+  const pendingFpvRef = useRef<string | null>(resolveInitialFpv());
+
+  const fpvPositionRef = useRef<{
+    lng: number;
+    lat: number;
+    alt: number;
+    track: number;
+  } | null>(null);
+
+  const [fpvSeedCenter, setFpvSeedCenter] = useState<{
+    lng: number;
+    lat: number;
+  } | null>(null);
+
+  const lookupAbortRef = useRef<AbortController | null>(null);
+  const [selectedAirportIata, setSelectedAirportIata] = useState<string | null>(
+    null,
+  );
+  const [userLocation, setUserLocation] = useState<[number, number] | null>(
+    null,
+  );
+
+  const preferredInitialStyle = useMemo(
+    () => MAP_STYLES.find((style) => style.id === initialMapStyleId),
+    [initialMapStyleId],
+  );
+  const mapStyle =
+    styleOverride ??
+    (preferredInitialStyle && hydratedStyle.id === DEFAULT_STYLE.id
+      ? preferredInitialStyle
+      : hydratedStyle);
+  const { settings, update } = useSettings();
+  const isMobile = useIsMobile();
+  const showAirspace = airspaceAvailable && settings.showAirspace;
+  const radarCountryCoverage = useMemo(
+    () =>
+      settings.radarCountry !== WORLD_RADAR_COUNTRY
+        ? getRadarCountryCoverage(settings.radarCountry)
+        : null,
+    [settings.radarCountry],
+  );
+  const activeCity = radarCountryCoverage?.city ?? cityOverride ?? hydratedCity;
+  const trafficMode = radarCountryCoverage ? "nearby" : globalTrafficMode;
+
+  useEffect(() => {
+    if (!isMobile || !leftPanel) return;
+    const timeout = window.setTimeout(() => setLeftPanel(null), 0);
+    return () => window.clearTimeout(timeout);
+  }, [isMobile, leftPanel]);
+
+  const setActiveCity = useCallback((city: City) => {
+    setCityOverride(city);
+    setSelectedIcao24(null);
+    setSelectedAirportIata(null);
+    setFpvIcao24(null);
+    setFollowIcao24(null);
+    setLeftPanel(null);
+    syncCityToUrl(city);
+  }, []);
+
+  useEffect(() => {
+    if (!radarCountryCoverage) return;
+
+    syncCityToUrl(radarCountryCoverage.city);
+    window.dispatchEvent(
+      new CustomEvent("atc:reset-view", {
+        detail: { center: radarCountryCoverage.city.coordinates },
+      }),
+    );
+  }, [radarCountryCoverage]);
+
+  /** Called when user clicks an airport dot on the map - navigates AND opens the board. */
+  const handleAirportDotClick = useCallback(
+    (city: City) => {
+      setCityOverride(city);
+      setSelectedIcao24(null);
+      setFpvIcao24(null);
+      setFollowIcao24(null);
+      syncCityToUrl(city);
+      setSelectedAirportIata(city.iata);
+      setLeftPanel(isMobile ? null : { kind: "airport" });
+    },
+    [isMobile],
+  );
+
+  const setMapStyle = useCallback((style: MapStyle) => {
+    setStyleOverride(style);
+    saveMapStyle(style);
+  }, []);
+
+  const feedCenter = useMemo(() => {
+    if (radarCountryCoverage) {
+      return radarCountryCoverage.center;
+    }
+
+    return userLocation
+      ? { latitude: userLocation[1], longitude: userLocation[0] }
+      : {
+          latitude: activeCity.coordinates[1],
+          longitude: activeCity.coordinates[0],
+        };
+  }, [activeCity.coordinates, radarCountryCoverage, userLocation]);
+  const feedRadiusNm = radarCountryCoverage?.radiusNm ?? 250;
+  const feedLimit = radarCountryCoverage ? 5_000 : undefined;
+  const { flights, rateLimited, retryIn } =
+    useGlobalRadarFlights({
+      enabled: true,
+      mode: trafficMode,
+      center: feedCenter,
+      radiusNm: feedRadiusNm,
+      limit: feedLimit,
+    });
+
+  // Both the airspace and weather radar overlays are scoped to ~2×
+  // the flight fetch radius so we don't pull tiles for the entire
+  // globe. Two modes:
+  //   • City mode (default): box centered on `activeCity` with radius
+  //     = city.radius × 2 (~300 NM for the seed cities).
+  //   • FPV mode: box centered on the tracked aircraft, sized to the
+  //     FPV point-radius × 2 (~240 NM half-width). The center is
+  //     snapped to a 0.5° grid so the bbox only re-anchors every
+  //     ~30 NM of travel - otherwise every position tick would force
+  //     a source re-add.
+  //
+  // The overlay layers debounce identical bounds via
+  // `airspaceBoundsKey`, so returning a freshly allocated array each
+  // render is fine - their effects only re-run when the quantised
+  // key actually changes.
+  const airspaceBounds = useMemo(() => {
+    if (fpvIcao24) {
+      const target = fpvIcao24.toLowerCase();
+      const tracked = flights.find((f) => f.icao24.toLowerCase() === target);
+      const lng =
+        tracked && Number.isFinite(tracked.longitude)
+          ? (tracked.longitude as number)
+          : (fpvSeedCenter?.lng ?? null);
+      const lat =
+        tracked && Number.isFinite(tracked.latitude)
+          ? (tracked.latitude as number)
+          : (fpvSeedCenter?.lat ?? null);
+      if (lng !== null && lat !== null) {
+        const snap = FPV_BOUNDS_SNAP_DEG;
+        const snappedLng = Math.round(lng / snap) * snap;
+        const snappedLat = Math.round(lat / snap) * snap;
+        return computeAirspaceBounds(
+          {
+            coordinates: [snappedLng, snappedLat],
+            // AIRSPACE_RADIUS_MULTIPLIER is applied inside
+            // computeAirspaceBounds; dividing here keeps the final
+            // half-width at exactly FPV_AIRSPACE_RADIUS_DEG.
+            radius: FPV_AIRSPACE_RADIUS_DEG / AIRSPACE_RADIUS_MULTIPLIER,
+          },
+          AIRSPACE_RADIUS_MULTIPLIER,
+        );
+      }
+    }
+    return computeAirspaceBounds(activeCity);
+  }, [fpvIcao24, flights, fpvSeedCenter, activeCity]);
+
+  const displayFlights = flights;
+  const trailState = useTrailSystem({
+    flights: displayFlights,
+    selectedIcao24,
+    historyEnabled: !!selectedIcao24 && !fpvIcao24,
+  });
+  const mergedTrails = trailState.trails;
+  const selectedTrack = trailState.selectedTrack;
+
+  // Single Map for O(1) flight lookups - replaces 4× O(n) find() calls per poll
+  const displayFlightMap = useMemo(() => {
+    const m = new Map<string, FlightState>();
+    for (const f of displayFlights) m.set(f.icao24, f);
+    return m;
+  }, [displayFlights]);
+
+  const selectedFlight = useMemo(() => {
+    if (!selectedIcao24) return null;
+    return displayFlightMap.get(selectedIcao24) ?? null;
+  }, [selectedIcao24, displayFlightMap]);
+
+  const selectedTrail = useMemo(() => {
+    if (!selectedIcao24) return null;
+    return mergedTrails.find((t) => t.icao24 === selectedIcao24) ?? null;
+  }, [selectedIcao24, mergedTrails]);
+
+  const followFlight = useMemo(() => {
+    if (!followIcao24) return null;
+    return displayFlightMap.get(followIcao24) ?? null;
+  }, [followIcao24, displayFlightMap]);
+
+  const fpvFlight = useMemo(() => {
+    if (!fpvIcao24) return null;
+    return displayFlightMap.get(fpvIcao24) ?? null;
+  }, [fpvIcao24, displayFlightMap]);
+
+  useEffect(() => {
+    syncFpvToUrl(fpvIcao24, activeCity);
+  }, [fpvIcao24, activeCity]);
+
+  useFlightMonitors({
+    pendingFpvRef,
+    fpvIcao24,
+    fpvFlight,
+    followIcao24,
+    followFlight,
+    selectedIcao24,
+    selectedFlight,
+    displayFlights,
+    activeCity,
+    rateLimited,
+    setSelectedIcao24,
+    setFpvIcao24,
+    setFollowIcao24,
+    setCityOverride,
+    setFpvSeedCenter,
+  });
+
+  const atc = useAtcStream();
+
+  const fpvFlightOrCached = fpvFlight;
+  const displayFlight = selectedFlight;
+
+  // ── Airport Board state ──────────────────────────────────────────────
+  const mapStateRef = useRef<MapViewState>({
+    zoom: 9.2,
+    center: { lat: 0, lng: 0 },
+  });
+  const [mapViewState, setMapViewState] = useState<MapViewState>({
+    zoom: 9.2,
+    center: { lat: 0, lng: 0 },
+  });
+
+  const handleMapStateChange = useCallback((state: MapViewState) => {
+    setMapViewState(state);
+  }, []);
+
+  const airportBoard = useAirportBoard(
+    displayFlights,
+    mapViewState.center,
+    mapViewState.zoom,
+    activeCity.iata,
+    selectedAirportIata,
+  );
+
+  useEffect(() => {
+    let shouldClose = false;
+    if (leftPanel?.kind === "flight" && !selectedIcao24) {
+      shouldClose = true;
+    }
+    if (leftPanel?.kind === "airport" && !airportBoard.isActive) {
+      shouldClose = true;
+    }
+    if (!shouldClose) return;
+
+    const timeout = window.setTimeout(() => setLeftPanel(null), 0);
+    return () => window.clearTimeout(timeout);
+  }, [airportBoard.isActive, leftPanel, selectedIcao24]);
+
+  const handleAirportBoardSelect = useCallback(
+    (icao24: string) => {
+      const nextIcao24 = selectedIcao24 === icao24 ? null : icao24;
+      const nextFlight = nextIcao24
+        ? displayFlightMap.get(nextIcao24)
+        : null;
+      setSelectedIcao24(nextIcao24);
+      setFollowIcao24(
+        nextFlight &&
+          !nextFlight.onGround &&
+          nextFlight.longitude != null &&
+          nextFlight.latitude != null
+          ? nextIcao24
+          : null,
+      );
+      if (nextIcao24) {
+        setSelectedAirportIata(null);
+        if (!isMobile) setLeftPanel({ kind: "flight" });
+      }
+    },
+    [displayFlightMap, isMobile, selectedIcao24],
+  );
+
+  const handleAirportBoardClose = useCallback(() => {
+    setSelectedAirportIata(null);
+    setLeftPanel((panel) => (panel?.kind === "airport" ? null : panel));
+  }, []);
+
+  const [atcToggle, setAtcToggle] = useState(0);
+  const handleToggleAtc = useCallback(() => {
+    setAtcToggle((c) => c + 1);
+  }, []);
+
+  const handleClick = useCallback(
+    (info: PickingInfo<FlightState> | null) => {
+      if (fpvIcao24) return;
+      lookupAbortRef.current?.abort();
+      lookupAbortRef.current = null;
+      if (info?.object) {
+        const icao24 = info.object.icao24.toLowerCase();
+        const nextIcao24 = selectedIcao24 === icao24 ? null : icao24;
+        setSelectedIcao24(nextIcao24);
+        setFollowIcao24(
+          nextIcao24 &&
+            !info.object.onGround &&
+            info.object.longitude != null &&
+            info.object.latitude != null
+            ? nextIcao24
+            : null,
+        );
+        setSelectedAirportIata(null);
+        if (!isMobile) {
+          setLeftPanel(nextIcao24 ? { kind: "flight" } : null);
+        }
+      } else {
+        setSelectedIcao24(null);
+        setFollowIcao24(null);
+        setLeftPanel(null);
+      }
+    },
+    [fpvIcao24, isMobile, selectedIcao24],
+  );
+
+  const handleDeselectFlight = useCallback(() => {
+    setFollowIcao24(null);
+    setLeftPanel((panel) => (panel?.kind === "flight" ? null : panel));
+    if (fpvIcao24) {
+      setSelectedIcao24(fpvIcao24);
+      setFpvIcao24(null);
+    } else {
+      setSelectedIcao24(null);
+    }
+  }, [fpvIcao24]);
+
+  const handleToggleFpv = useCallback(
+    (icao24: string) => {
+      const targetIcao24 = icao24.toLowerCase();
+      const flight =
+        displayFlightMap.get(targetIcao24) ??
+        flights.find((f) => f.icao24 === targetIcao24);
+      if (!flight) return;
+      if (flight.longitude == null || flight.latitude == null) return;
+      if (flight.onGround) return;
+      setLeftPanel(null);
+      setFpvSeedCenter({ lng: flight.longitude, lat: flight.latitude });
+      setFpvIcao24((prev) => {
+        if (prev === targetIcao24) {
+          setFpvSeedCenter(null);
+          setSelectedIcao24(targetIcao24);
+          return null;
+        }
+        return targetIcao24;
+      });
+      setFollowIcao24(null);
+    },
+    [displayFlightMap, flights],
+  );
+
+  const handleExitFpv = useCallback(() => {
+    setSelectedIcao24(fpvIcao24);
+    setFpvIcao24(null);
+    if (!isMobile && fpvIcao24) setLeftPanel({ kind: "flight" });
+  }, [fpvIcao24, isMobile]);
+
+  const handleNorthUp = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("atc:north-up"));
+  }, []);
+
+  const handleResetView = useCallback(() => {
+    window.dispatchEvent(
+      new CustomEvent("atc:reset-view", {
+        detail: { center: activeCity.coordinates },
+      }),
+    );
+  }, [activeCity.coordinates]);
+
+  // Geolocation: find nearest airport, switch active city, store user dot
+  useEffect(() => {
+    function onGeolocate(e: Event) {
+      const { coordinates } = (
+        e as CustomEvent<{ coordinates: [number, number] }>
+      ).detail;
+      setUserLocation(coordinates);
+      const [lng, lat] = coordinates;
+      const nearest = findNearestAirport(lat, lng, 250);
+      if (nearest) {
+        const city = airportToCity(nearest);
+        setActiveCity(city);
+      }
+      // Always fly to the user's actual location (not the airport)
+      window.dispatchEvent(
+        new CustomEvent("atc:reset-view", {
+          detail: { center: coordinates },
+        }),
+      );
+    }
+    window.addEventListener("atc:geolocate", onGeolocate);
+    return () => window.removeEventListener("atc:geolocate", onGeolocate);
+  }, [setActiveCity]);
+
+  const handleRandomAirport = useCallback(() => {
+    const randomCity = pickRandomAirportCity(activeCity.iata);
+    setActiveCity(randomCity);
+  }, [activeCity.iata, setActiveCity]);
+
+  const handleToggleOrbit = useCallback(() => {
+    update("autoOrbit", !settings.autoOrbit);
+  }, [settings.autoOrbit, update]);
+
+  const handleOpenSearch = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("atc:open-search"));
+  }, []);
+
+  const handleToggleHelp = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("atc:open-shortcuts"));
+  }, []);
+
+  const handleToggleFpvKey = useCallback(() => {
+    if (fpvIcao24) {
+      setSelectedIcao24(fpvIcao24);
+      setFpvIcao24(null);
+      if (!isMobile) setLeftPanel({ kind: "flight" });
+    } else if (selectedIcao24) {
+      handleToggleFpv(selectedIcao24);
+    }
+  }, [fpvIcao24, handleToggleFpv, isMobile, selectedIcao24]);
+
+  const handleShortcutDeselect = useCallback(() => {
+    if (leftPanel) {
+      setLeftPanel(null);
+      return;
+    }
+    handleDeselectFlight();
+  }, [handleDeselectFlight, leftPanel]);
+
+  // Helper: select flight and optionally enter FPV
+  const selectFlight = useCallback(
+    (f: FlightState, enterFpv = false) => {
+      setSelectedIcao24(f.icao24);
+      setFollowIcao24(
+        !enterFpv &&
+          !f.onGround &&
+          f.longitude != null &&
+          f.latitude != null
+          ? f.icao24
+          : null,
+      );
+      setSelectedAirportIata(null);
+      if (
+        enterFpv &&
+        !f.onGround &&
+        f.longitude != null &&
+        f.latitude != null
+      ) {
+        setFpvSeedCenter({ lng: f.longitude, lat: f.latitude });
+        setFpvIcao24(f.icao24);
+        setLeftPanel(null);
+      } else if (!isMobile) {
+        setLeftPanel({ kind: "flight" });
+      }
+    },
+    [isMobile],
+  );
+
+  const handleSelectFlight = useCallback(
+    (flight: FlightState) => {
+      const focusCity = cityFromFlight(flight);
+      if (focusCity) {
+        setCityOverride(focusCity);
+        syncCityToUrl(focusCity);
+      }
+      setSelectedAirportIata(null);
+      selectFlight(flight);
+    },
+    [selectFlight],
+  );
+
+  const handleLookupFlight = useCallback(
+    async (rawQuery: string, enterFpv = false): Promise<boolean> => {
+      const compactQuery = rawQuery.trim().toLowerCase().replace(/\s+/g, "");
+      if (!compactQuery) return false;
+
+      // Local match: try direct hex lookup first, then callsign match with
+      // IATA ↔ ICAO translation support.
+      const localMatch =
+        displayFlightMap.get(compactQuery) ??
+        displayFlights.find((f) =>
+          flightQueryMatches(rawQuery, f.callsign),
+        ) ??
+        null;
+
+      if (localMatch) {
+        selectFlight(localMatch, enterFpv);
+        return true;
+      }
+
+      // Cancel any previous pending lookup
+      lookupAbortRef.current?.abort();
+      const controller = new AbortController();
+      lookupAbortRef.current = controller;
+
+      try {
+        // Phase 1: Always try expanded query variants first (IATA ↔ ICAO).
+        // This handles the common case where a user searches "IX2680" but
+        // the transponder broadcasts "AXB2680".
+        let result: { flight: FlightState | null } = { flight: null };
+
+        const variants = expandFlightQuery(rawQuery);
+        // Ensure the raw compact query is included as a fallback variant
+        if (!variants.includes(compactQuery.toUpperCase())) {
+          variants.unshift(compactQuery.toUpperCase());
+        }
+
+        for (const variant of variants) {
+          if (controller.signal.aborted) break;
+          const vCompact = variant.toLowerCase();
+          const vHex = /^[0-9a-f]{6}$/i.test(vCompact);
+
+          if (vHex) {
+            result = await fetchFlightByHex(vCompact, controller.signal);
+          } else {
+            result = await fetchFlightByCallsign(variant, controller.signal);
+          }
+          if (result.flight) break;
+        }
+
+        // Phase 2: For 6-char hex-like queries, also try the opposite endpoint
+        // of what the variants already attempted.
+        if (!result.flight && !controller.signal.aborted) {
+          const isHex = /^[0-9a-f]{6}$/i.test(compactQuery);
+          if (isHex) {
+            // Variants already tried hex; try raw callsign as last resort
+            result = await fetchFlightByCallsign(
+              compactQuery.toUpperCase(),
+              controller.signal,
+            );
+          } else {
+            // Variants already tried callsign; try raw hex as last resort
+            result = await fetchFlightByHex(compactQuery, controller.signal);
+          }
+        }
+
+        if (controller.signal.aborted) return false;
+        if (!result.flight) return false;
+
+        const focusCity = cityFromFlight(result.flight);
+        if (focusCity) {
+          setCityOverride(focusCity);
+          syncCityToUrl(focusCity);
+        }
+
+        selectFlight(result.flight, enterFpv);
+        return true;
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return false;
+        return false;
+      }
+    },
+    [displayFlights, displayFlightMap, selectFlight],
+  );
+
+  useKeyboardShortcuts({
+    onNorthUp: handleNorthUp,
+    onResetView: handleResetView,
+    onToggleOrbit: handleToggleOrbit,
+    onOpenSearch: handleOpenSearch,
+    onToggleHelp: handleToggleHelp,
+    onDeselect: handleShortcutDeselect,
+    onToggleFpv: handleToggleFpvKey,
+    onToggleAtc: handleToggleAtc,
+    isFpv: fpvIcao24 !== null,
+  });
+
+  // Whether to show the mobile bottom sheet flight card
+  const showMobileFlightCard = isMobile && !fpvIcao24 && !!displayFlight;
+  // Whether to show the mobile airport bottom sheet
+  const showMobileAirportCard =
+    isMobile && !fpvIcao24 && !displayFlight && airportBoard.isActive;
+  const desktopLeftPanelOpen = !isMobile && !fpvIcao24 && leftPanel !== null;
+  const cityZoom =
+    trafficMode === "global"
+      ? 2.25
+      : radarCountryCoverage
+          ? radarCountryCoverage.radiusNm > 1_800
+            ? 3.35
+            : 4.1
+          : 7.25;
+  const statusLocationName =
+    radarCountryCoverage
+        ? `${radarCountryCoverage.label} traffic`
+      : trafficMode === "nearby"
+        ? `Nearby ${activeCity.iata}`
+        : "Global traffic";
+  const desktopPanelStyle = {
+    "--atc-left-sidebar-width": ATC_LEFT_SIDEBAR_WIDTH,
+    "--atc-left-chrome-shift": `calc(${ATC_LEFT_SIDEBAR_WIDTH} + 0.25rem)`,
+    "--atc-map-center-shift": `calc(${ATC_LEFT_SIDEBAR_WIDTH} / 2)`,
+  } as CSSProperties;
+
+  return (
+    <main
+      className="relative h-dvh w-screen overflow-hidden bg-sidebar"
+      style={desktopPanelStyle}
+    >
+      <div
+        className="atc-map-surface absolute inset-0 z-0 overflow-hidden bg-background"
+        data-panel-open={desktopLeftPanelOpen}
+      >
+        <MapView
+          mapStyle={mapStyle.style}
+          terrainProfile={mapStyle.terrainProfile}
+          isDark={mapStyle.dark}
+          globeMode={settings.globeMode}
+        >
+          <CameraController
+            city={activeCity}
+            cityZoom={cityZoom}
+            followFlight={followFlight}
+            fpvFlight={fpvFlightOrCached}
+            fpvPositionRef={fpvPositionRef}
+          />
+          <MapStateTracker
+            stateRef={mapStateRef}
+            onChange={handleMapStateChange}
+          />
+          <AirportLayer
+            activeCity={activeCity}
+            onSelectAirport={handleAirportDotClick}
+            isDark={mapStyle.dark}
+          />
+          <UserLocationMarker coordinates={userLocation} />
+          {airspaceAvailable && (
+            <AirspaceLayer
+              visible={showAirspace}
+              opacity={settings.airspaceOpacity}
+              bounds={airspaceBounds}
+            />
+          )}
+          <WeatherRadarLayer
+            visible={settings.showWeatherRadar}
+            opacity={settings.weatherRadarOpacity}
+            bounds={airspaceBounds}
+          />
+          <FlightLayers
+            flights={displayFlights}
+            trails={mergedTrails}
+            selectedEnvelope={trailState.selectedEnvelope}
+            onClick={handleClick}
+            selectedIcao24={fpvIcao24 ?? selectedIcao24}
+            showTrails={settings.showTrails}
+            trailThickness={settings.trailThickness}
+            trailDistance={settings.trailDistance}
+            showShadows={aircraftShadows && settings.showShadows}
+            showAltitudeColors={settings.showAltitudeColors}
+            altitudeDisplayMode={settings.altitudeDisplayMode}
+            globeMode={settings.globeMode}
+            force2DMarkers={force2DMarkers}
+            fpvIcao24={fpvIcao24}
+            fpvPositionRef={fpvPositionRef}
+          />
+        </MapView>
+      </div>
+
+      <div className="pointer-events-none absolute inset-0 z-10">
+        {!fpvIcao24 && (
+          <div
+            className="atc-left-chrome pointer-events-auto absolute left-3 top-3 flex max-w-[calc(100vw-5.75rem)] flex-col items-start gap-2 sm:left-4 sm:top-4 sm:max-w-none sm:flex-row sm:items-center sm:gap-3"
+            data-panel-open={desktopLeftPanelOpen}
+          >
+            <Brand />
+            <TrafficScopeControls
+              mode={trafficMode}
+              coverageLabel={radarCountryCoverage?.label}
+              onModeChange={setGlobalTrafficMode}
+            />
+          </div>
+        )}
+
+        {!fpvIcao24 && !isMobile && (
+          <AtcLeftSidebar
+            leftPanel={leftPanel}
+            onClose={() => setLeftPanel(null)}
+            displayFlight={displayFlight}
+            selectedTrail={selectedTrail}
+            selectedTrack={selectedTrack}
+            onCloseFlight={handleDeselectFlight}
+            onToggleFpv={handleToggleFpv}
+            isFpvActive={
+              fpvIcao24 !== null && fpvIcao24 === displayFlight?.icao24
+            }
+            airportBoard={airportBoard}
+            onSelectAirportFlight={handleAirportBoardSelect}
+            selectedIcao24={selectedIcao24}
+            onCloseAirport={handleAirportBoardClose}
+            atc={atc}
+          />
+        )}
+
+        {!fpvIcao24 && (
+          <div className="pointer-events-auto absolute right-3 top-3 flex items-center gap-1.5 sm:right-4 sm:top-4 sm:gap-2">
+            <ControlPanel
+              airspaceAvailable={airspaceAvailable}
+              activeCity={activeCity}
+              onSelectCity={setActiveCity}
+              activeStyle={mapStyle}
+              onSelectStyle={setMapStyle}
+              flights={displayFlights}
+              activeFlightIcao24={selectedIcao24}
+              onLookupFlight={handleLookupFlight}
+              onSelectFlight={handleSelectFlight}
+            />
+          </div>
+        )}
+
+        {!fpvIcao24 && (
+          <div
+            className="atc-left-chrome pointer-events-auto absolute bottom-[env(safe-area-inset-bottom,0px)] left-3 mb-3 sm:bottom-4 sm:left-4 sm:mb-0"
+            data-panel-open={desktopLeftPanelOpen}
+          >
+            <StatusBar
+              cityName={statusLocationName}
+              cityIata={activeCity.iata}
+              cityCoordinates={activeCity.coordinates}
+              rateLimited={rateLimited}
+              retryIn={retryIn}
+              onNorthUp={handleNorthUp}
+              onResetView={handleResetView}
+              onRandomAirport={handleRandomAirport}
+              atc={atc}
+              atcToggle={atcToggle}
+            />
+          </div>
+        )}
+
+        {/* ATC Player Bar - top-center on mobile, bottom-center on desktop */}
+        {!fpvIcao24 && (
+          <AnimatePresence>
+            {atc.feed && (
+              <div
+                className="atc-map-centered-chrome pointer-events-auto absolute left-1/2 top-14 sm:top-auto sm:bottom-18"
+                data-panel-open={desktopLeftPanelOpen}
+              >
+                <AtcPlayerBar atc={atc} onOpenFeedSelector={handleToggleAtc} />
+              </div>
+            )}
+          </AnimatePresence>
+        )}
+
+        {!fpvIcao24 && (
+          <div className="pointer-events-none absolute bottom-[env(safe-area-inset-bottom,0px)] right-3 mb-3 flex flex-col items-end gap-2 sm:bottom-4 sm:right-4 sm:mb-0">
+            <div className="pointer-events-auto">
+              <CameraControls />
+            </div>
+            <div className="pointer-events-auto">
+              <AltitudeLegend />
+            </div>
+            <div className="pointer-events-auto">
+              <MapAttribution
+                styleId={mapStyle.id}
+                showAirspace={showAirspace}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Mobile flight card - native bottom sheet with drag-to-dismiss */}
+        <AnimatePresence>
+          {showMobileFlightCard && displayFlight && (
+            <motion.div
+              key={displayFlight.icao24}
+              className="pointer-events-auto fixed inset-x-0 bottom-0 z-50 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))]"
+              initial={{ y: "100%", opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: "100%", opacity: 0 }}
+              transition={{
+                type: "spring",
+                stiffness: 400,
+                damping: 35,
+                mass: 0.8,
+              }}
+              drag="y"
+              dragConstraints={{ top: 0, bottom: 0 }}
+              dragElastic={{ top: 0, bottom: 0.6 }}
+              onDragEnd={(_, info) => {
+                if (info.offset.y > 80 || info.velocity.y > 300) {
+                  handleDeselectFlight();
+                }
+              }}
+            >
+              <MobileFlightToast
+                flight={displayFlight}
+                track={selectedTrack}
+                onClose={handleDeselectFlight}
+                onToggleFpv={handleToggleFpv}
+                isFpvActive={fpvIcao24 === displayFlight.icao24}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Mobile airport card - self-contained bottom sheet with drag-to-dismiss */}
+        <AnimatePresence>
+          {showMobileAirportCard && (
+            <AirportInfoCard
+              key={`airport-${airportBoard.airport?.iata ?? "none"}`}
+              board={airportBoard}
+              onSelectFlight={handleAirportBoardSelect}
+              selectedIcao24={selectedIcao24}
+              onClose={handleAirportBoardClose}
+              atc={atc}
+              variant="mobile"
+            />
+          )}
+        </AnimatePresence>
+      </div>
+
+      <AnimatePresence>
+        {fpvIcao24 && fpvFlightOrCached && (
+          <FpvHud flight={fpvFlightOrCached} onExit={handleExitFpv} />
+        )}
+      </AnimatePresence>
+    </main>
+  );
+}
+
+function TrafficScopeControls({
+  mode,
+  coverageLabel,
+  onModeChange,
+}: {
+  mode: "global" | "nearby";
+  coverageLabel?: string;
+  onModeChange: (mode: "global" | "nearby") => void;
+}) {
+  if (coverageLabel) {
+    return (
+      <span
+        className="rounded-xl border px-3 py-2 text-[11px] font-semibold tracking-wide backdrop-blur-2xl"
+        style={{
+          borderColor: "rgb(var(--ui-fg) / 0.06)",
+          backgroundColor: "rgb(var(--ui-bg) / 0.5)",
+          color: "rgb(var(--ui-fg) / 0.58)",
+        }}
+      >
+        {coverageLabel}
+      </span>
+    );
+  }
+
+  return (
+    <div
+      className="flex items-center rounded-xl border p-1 backdrop-blur-2xl"
+      style={{
+        borderColor: "rgb(var(--ui-fg) / 0.06)",
+        backgroundColor: "rgb(var(--ui-bg) / 0.5)",
+      }}
+      aria-label="Traffic scope"
+    >
+      {(["global", "nearby"] as const).map((item) => {
+        const active = mode === item;
+        return (
+          <button
+            key={item}
+            type="button"
+            onClick={() => onModeChange(item)}
+            className="min-h-7 rounded-lg px-2.5 text-[11px] font-semibold tracking-wide"
+            style={{
+              backgroundColor: active
+                ? "rgb(var(--ui-fg) / 0.1)"
+                : "transparent",
+              color: active
+                ? "rgb(var(--ui-fg) / 0.75)"
+                : "rgb(var(--ui-fg) / 0.42)",
+            }}
+          >
+            {item === "global" ? "Global" : "Nearby"}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function FlightTracker({
+  airspaceAvailable = true,
+  aircraftShadows = true,
+  initialCity,
+  initialMapStyleId,
+  force2DMarkers = false,
+}: FlightTrackerProps) {
+  return (
+    <ErrorBoundary>
+      <SettingsProvider>
+        <FlightTrackerInner
+          airspaceAvailable={airspaceAvailable}
+          aircraftShadows={aircraftShadows}
+          initialCity={initialCity}
+          initialMapStyleId={initialMapStyleId}
+          force2DMarkers={force2DMarkers}
+        />
+      </SettingsProvider>
+    </ErrorBoundary>
+  );
+}
