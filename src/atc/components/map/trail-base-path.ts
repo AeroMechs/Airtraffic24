@@ -9,7 +9,7 @@ import {
   roundSharpCorners3D,
 } from "@/atc/lib/trail-smoothing";
 import type { ElevatedPoint } from "./flight-layer-constants";
-import { TELEPORT_THRESHOLD } from "./flight-layer-constants";
+import { TELEPORT_THRESHOLD_METERS } from "./flight-layer-constants";
 import {
   cleanupControlPointArtifacts,
   getCurveFootprintMetrics,
@@ -189,8 +189,16 @@ export function buildTrailBasePath(
   }
 
   const unwrappedPath = unwrapLngPath(pathSlice);
-  const maxJumpDeg = isFullHistory ? 3.0 : TELEPORT_THRESHOLD;
-  const trimmed = trimAfterLargeJump(unwrappedPath, altitudeSlice, maxJumpDeg);
+  // Keep the longer tolerance for sparse full-history samples, but classify
+  // jumps in meters so high-latitude and antimeridian paths stay continuous.
+  const maxJumpMeters = isFullHistory
+    ? TELEPORT_THRESHOLD_METERS * 10
+    : TELEPORT_THRESHOLD_METERS;
+  const trimmed = trimAfterLargeJump(
+    unwrappedPath,
+    altitudeSlice,
+    maxJumpMeters,
+  );
   pathSlice = trimmed.path;
   altitudeSlice = trimmed.altitudes;
 

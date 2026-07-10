@@ -15,10 +15,13 @@ import {
   ChevronsDown,
   RotateCw,
   RotateCcw,
+  Pause,
+  Play,
   Locate,
   Maximize,
   Minimize,
 } from "lucide-react";
+import { useSettings } from "@/atc/hooks/use-settings";
 
 type CameraActionType = "zoom" | "pitch" | "bearing";
 
@@ -86,6 +89,9 @@ function ControlButton({
       onPointerDown={handlers.onPointerDown}
       onPointerUp={handlers.onPointerUp}
       onPointerLeave={handlers.onPointerLeave}
+      onPointerCancel={handlers.onPointerLeave}
+      onLostPointerCapture={handlers.onPointerLeave}
+      onBlur={handlers.onPointerLeave}
       onContextMenu={(e) => e.preventDefault()}
     >
       {children}
@@ -140,21 +146,31 @@ function ActionButton({
   label,
   title,
   onClick,
+  pressed,
   children,
 }: {
   label: string;
   title: string;
   onClick: () => void;
+  pressed?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <motion.button
       type="button"
-      className="flex h-8 w-8 items-center justify-center select-none"
-      style={{ color: "rgb(var(--ui-fg) / 0.45)" }}
+      className="flex h-8 w-8 items-center justify-center rounded-md select-none"
+      style={{
+        color: pressed
+          ? "rgb(var(--ui-fg) / 0.90)"
+          : "rgb(var(--ui-fg) / 0.45)",
+        backgroundColor: pressed
+          ? "rgb(var(--ui-fg) / 0.10)"
+          : "transparent",
+      }}
       whileHover={{ scale: 1.12 }}
       whileTap={{ scale: 0.88 }}
       aria-label={label}
+      aria-pressed={pressed}
       title={title}
       onClick={onClick}
       onContextMenu={(e) => e.preventDefault()}
@@ -223,6 +239,7 @@ function useFullscreen() {
 }
 
 export function CameraControls() {
+  const { settings, update } = useSettings();
   const { flyToMe, locating } = useGeolocation();
   const {
     isFullscreen,
@@ -230,6 +247,12 @@ export function CameraControls() {
     supported: fsSupported,
     mounted,
   } = useFullscreen();
+  const freeMovement = !settings.autoOrbit;
+  const toggleAutoOrbit = useCallback(() => {
+    if (settings.autoOrbit) dispatchCameraStop("bearing");
+    update("autoOrbit", !settings.autoOrbit);
+  }, [settings.autoOrbit, update]);
+
   return (
     <motion.div
       initial={{ opacity: 0, x: 12 }}
@@ -306,6 +329,27 @@ export function CameraControls() {
       >
         <RotateCcw className="h-3.5 w-3.5" />
       </ControlButton>
+      <Divider />
+      <ActionButton
+        label={
+          freeMovement
+            ? "Resume automatic rotation"
+            : "Stop automatic rotation"
+        }
+        title={
+          freeMovement
+            ? "Resume automatic rotation"
+            : "Stop rotation and move the map freely"
+        }
+        pressed={freeMovement}
+        onClick={toggleAutoOrbit}
+      >
+        {freeMovement ? (
+          <Play className="size-3.5 shrink-0" />
+        ) : (
+          <Pause className="size-3.5 shrink-0" />
+        )}
+      </ActionButton>
 
       <div
         className="mx-auto my-0.5 h-px w-6"

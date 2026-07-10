@@ -11,6 +11,28 @@ export function smoothStep(t: number): number {
   return t * t * (3 - 2 * t);
 }
 
+/**
+ * Signed shortest-path longitude delta in degrees.
+ *
+ * Keeping this allocation-free matters because the interpolation and bearing
+ * paths call it for every visible aircraft on every animation frame.
+ */
+export function wrappedLongitudeDelta(
+  fromLongitude: number,
+  toLongitude: number,
+): number {
+  return ((toLongitude - fromLongitude + 540) % 360) - 180;
+}
+
+/** Interpolate longitude without taking the long way around the globe. */
+export function interpolateLongitude(
+  fromLongitude: number,
+  toLongitude: number,
+  t: number,
+): number {
+  return fromLongitude + wrappedLongitudeDelta(fromLongitude, toLongitude) * t;
+}
+
 // ── Distance Helpers ───────────────────────────────────────────────────
 
 export function horizontalDistanceFromLngLat(
@@ -20,8 +42,8 @@ export function horizontalDistanceFromLngLat(
   bLat: number,
 ): number {
   const avgLatRad = ((aLat + bLat) * 0.5 * Math.PI) / 180;
-  const metersPerDegLon = 111_320 * Math.max(0.2, Math.cos(avgLatRad));
-  const dx = (bLng - aLng) * metersPerDegLon;
+  const metersPerDegLon = 111_320 * Math.max(0, Math.cos(avgLatRad));
+  const dx = wrappedLongitudeDelta(aLng, bLng) * metersPerDegLon;
   const dy = (bLat - aLat) * 111_320;
   return Math.hypot(dx, dy);
 }

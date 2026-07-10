@@ -18,7 +18,10 @@ import {
   DEFAULT_ANIM_DURATION_MS,
   MIN_ANIM_DURATION_MS,
   MAX_ANIM_DURATION_MS,
-  TELEPORT_THRESHOLD,
+  MIN_CADENCE_BUFFER_MS,
+  MAX_CADENCE_BUFFER_MS,
+  CADENCE_BUFFER_RATIO,
+  TELEPORT_THRESHOLD_METERS,
   TRACK_DAMPING,
   MLAT_POSITION_ALPHA,
   AIRCRAFT_PICK_RADIUS_PX,
@@ -40,7 +43,12 @@ import {
   getAircraftAtlasUrl,
 } from "./aircraft-appearance";
 
-import { lerpAngle, smoothStep } from "./flight-math";
+import {
+  horizontalDistanceMeters,
+  interpolateLongitude,
+  lerpAngle,
+  smoothStep,
+} from "./flight-math";
 
 import {
   computePitchByIcao,
@@ -68,6 +76,8 @@ const HIGH_DENSITY_3D_ZOOM_LIMIT = 7.25;
 const HIGH_DENSITY_TRAIL_ZOOM_RECOVERY = 8;
 const VIEWPORT_PADDING_RATIO = 0.3;
 const VIEWPORT_UPDATE_THROTTLE_MS = 120;
+const VIEWPORT_REBUILD_SHIFT_RATIO = 0.08;
+const VIEWPORT_REBUILD_SCALE_RATIO = 0.06;
 const DECK_DEVICE_PIXEL_RATIO_CAP = 1.5;
 const DATA_SNAP_STALE_MIN_MS = 120_000;
 const FRAME_STALE_GRACE_MS = 5_000;
@@ -126,6 +136,53 @@ function isFlightInsideViewport(
   return false;
 }
 
+function wrappedLongitudeDistance(a: number, b: number): number {
+  return Math.abs(((a - b + 540) % 360) - 180);
+}
+
+function shouldRefreshViewportBounds(
+  previous: ExpandedViewportBounds | null,
+  next: ExpandedViewportBounds,
+): boolean {
+  if (!previous) return true;
+  if (previous.allLongitudes !== next.allLongitudes) return true;
+
+  const previousWidth = Math.max(0.000_001, previous.east - previous.west);
+  const nextWidth = Math.max(0.000_001, next.east - next.west);
+  const previousHeight = Math.max(
+    0.000_001,
+    previous.north - previous.south,
+  );
+  const nextHeight = Math.max(0.000_001, next.north - next.south);
+  const widthChange = Math.abs(nextWidth - previousWidth) / previousWidth;
+  const heightChange = Math.abs(nextHeight - previousHeight) / previousHeight;
+
+  if (
+    widthChange >= VIEWPORT_REBUILD_SCALE_RATIO ||
+    heightChange >= VIEWPORT_REBUILD_SCALE_RATIO
+  ) {
+    return true;
+  }
+
+  const previousCenterLat = (previous.south + previous.north) / 2;
+  const nextCenterLat = (next.south + next.north) / 2;
+  if (
+    Math.abs(nextCenterLat - previousCenterLat) >=
+    previousHeight * VIEWPORT_REBUILD_SHIFT_RATIO
+  ) {
+    return true;
+  }
+
+  if (previous.allLongitudes) return false;
+
+  const previousCenterLng = (previous.west + previous.east) / 2;
+  const nextCenterLng = (next.west + next.east) / 2;
+  return (
+    wrappedLongitudeDistance(nextCenterLng, previousCenterLng) >=
+    previousWidth * VIEWPORT_REBUILD_SHIFT_RATIO
+  );
+}
+
 function getDataSnapStaleMs(animationDurationMs: number): number {
   return Math.max(DATA_SNAP_STALE_MIN_MS, animationDurationMs * 2.5);
 }
@@ -162,6 +219,7 @@ export function FlightLayers({
   altitudeDisplayMode,
   globeMode = false,
   force2DMarkers = false,
+  followIcao24 = null,
   fpvIcao24 = null,
   fpvPositionRef,
 }: FlightLayerProps) {
@@ -221,12 +279,14 @@ export function FlightLayers({
     source: FlightState[] | null;
     revision: number;
     selectedId: string | null;
+    followId: string | null;
     fpvId: string | null;
     result: FlightState[];
   }>({
     source: null,
     revision: -1,
     selectedId: null,
+    followId: null,
     fpvId: null,
     result: [],
   });
@@ -266,6 +326,7 @@ export function FlightLayers({
   const globeModeRef = useRef(globeMode);
   const force2DMarkersRef = useRef(force2DMarkers);
   const selectedIcao24Ref = useRef(selectedIcao24);
+  const followIcao24Ref = useRef(followIcao24);
   const fpvIcao24Ref = useRef(fpvIcao24);
   const fpvPosRef = useRef(fpvPositionRef);
   const prevSelectedRef = useRef<string | null>(null);
@@ -298,6 +359,7 @@ export function FlightLayers({
     showAltColorsRef.current = showAltitudeColors;
     altitudeDisplayModeRef.current = altitudeDisplayMode;
     force2DMarkersRef.current = force2DMarkers;
+    followIcao24Ref.current = followIcao24;
     fpvIcao24Ref.current = fpvIcao24;
     fpvPosRef.current = fpvPositionRef;
     onClickRef.current = onClick;
@@ -322,6 +384,7 @@ export function FlightLayers({
     globeMode,
     force2DMarkers,
     selectedIcao24,
+    followIcao24,
     fpvIcao24,
     fpvPositionRef,
   ]);
@@ -370,12 +433,13 @@ export function FlightLayers({
       const oldCurr = currSnapshotsRef.current.get(id);
 
       if (oldPrev && oldCurr) {
-        const dx = oldCurr.lng - oldPrev.lng;
-        const dy = oldCurr.lat - oldPrev.lat;
-        if (dx * dx + dy * dy <= TELEPORT_THRESHOLD * TELEPORT_THRESHOLD) {
+        if (
+          horizontalDistanceMeters(oldPrev, oldCurr) <=
+          TELEPORT_THRESHOLD_METERS
+        ) {
           newPrev.set(id, {
-            lng: oldPrev.lng + dx * oldLinearT,
-            lat: oldPrev.lat + dy * oldLinearT,
+            lng: interpolateLongitude(oldPrev.lng, oldCurr.lng, oldLinearT),
+            lat: oldPrev.lat + (oldCurr.lat - oldPrev.lat) * oldLinearT,
             alt: oldPrev.alt + (oldCurr.alt - oldPrev.alt) * oldLinearT,
             track: lerpAngle(oldPrev.track, oldCurr.track, oldAngleT),
           });
@@ -402,7 +466,7 @@ export function FlightLayers({
         let lng = f.longitude;
         let lat = f.latitude;
         if (isMLAT && prev) {
-          lng = prev.lng + (lng - prev.lng) * MLAT_POSITION_ALPHA;
+          lng = interpolateLongitude(prev.lng, lng, MLAT_POSITION_ALPHA);
           lat = prev.lat + (lat - prev.lat) * MLAT_POSITION_ALPHA;
         }
 
@@ -429,14 +493,24 @@ export function FlightLayers({
       if (intervals.length > 5) intervals.shift();
       const sorted = [...intervals].sort((a, b) => a - b);
       const medianInterval = sorted[Math.floor(sorted.length / 2)];
+      // Finish just after the expected next poll. This small, cadence-aware
+      // reserve absorbs normal timer/network jitter without running beyond
+      // the authoritative endpoint and snapping backwards on refresh.
+      const cadenceBuffer = Math.max(
+        MIN_CADENCE_BUFFER_MS,
+        Math.min(
+          MAX_CADENCE_BUFFER_MS,
+          medianInterval * CADENCE_BUFFER_RATIO,
+        ),
+      );
       animDurationRef.current = Math.max(
         MIN_ANIM_DURATION_MS,
-        Math.min(MAX_ANIM_DURATION_MS, medianInterval * 0.94),
+        Math.min(MAX_ANIM_DURATION_MS, medianInterval + cadenceBuffer),
       );
     }
     dataTimestampRef.current = now;
-    // Fresh data arrived - allow dead reckoning again (was blocked during
-    // the brief window after tab resume to prevent stale-heading extrapolation).
+    // Fresh data arrived, so normal cadence interpolation can resume after a
+    // visibility-change clamp.
     resumeSnapRef.current = false;
     // Increment data version so model layers know color/scale need recomputation
     dataVersionRef.current++;
@@ -465,29 +539,34 @@ export function FlightLayers({
   useEffect(() => {
     if (!map || !isLoaded) return;
 
-    let lastUpdateAt = 0;
+    let lastCheckAt = 0;
 
     const updateViewport = (force = false) => {
       const now = performance.now();
-      if (!force && now - lastUpdateAt < VIEWPORT_UPDATE_THROTTLE_MS) return;
-      lastUpdateAt = now;
-      viewportBoundsRef.current = getExpandedViewportBounds(map);
+      if (!force && now - lastCheckAt < VIEWPORT_UPDATE_THROTTLE_MS) return;
+      lastCheckAt = now;
+      const nextBounds = getExpandedViewportBounds(map);
+      if (!shouldRefreshViewportBounds(viewportBoundsRef.current, nextBounds)) {
+        return;
+      }
+      viewportBoundsRef.current = nextBounds;
       viewportRevisionRef.current++;
       lastFlightsForInterpRef.current = null;
     };
 
     const onMove = () => updateViewport(false);
-    const onMoveEnd = () => updateViewport(true);
+    const onMoveEnd = () => updateViewport(false);
+    const onResize = () => updateViewport(true);
 
     updateViewport(true);
     map.on("move", onMove);
     map.on("moveend", onMoveEnd);
-    map.on("resize", onMoveEnd);
+    map.on("resize", onResize);
 
     return () => {
       map.off("move", onMove);
       map.off("moveend", onMoveEnd);
-      map.off("resize", onMoveEnd);
+      map.off("resize", onResize);
     };
   }, [map, isLoaded]);
 
@@ -748,6 +827,7 @@ export function FlightLayers({
 
         const selectedFlightId = selectedIcao24Ref.current;
         const selectedIdForCull = selectedFlightId?.toLowerCase() ?? null;
+        const followId = followIcao24Ref.current?.toLowerCase() ?? null;
         const fpvId = fpvIcao24Ref.current?.toLowerCase() ?? null;
         const viewportRevision = viewportRevisionRef.current;
         const viewportCache = viewportFlightCacheRef.current;
@@ -757,6 +837,7 @@ export function FlightLayers({
           viewportCache.source === currentFlights &&
           viewportCache.revision === viewportRevision &&
           viewportCache.selectedId === selectedIdForCull &&
+          viewportCache.followId === followId &&
           viewportCache.fpvId === fpvId
         ) {
           currentFlightsForRender = viewportCache.result;
@@ -767,6 +848,7 @@ export function FlightLayers({
                 const id = flight.icao24.toLowerCase();
                 return (
                   id === selectedIdForCull ||
+                  id === followId ||
                   id === fpvId ||
                   isFlightInsideViewport(flight, bounds)
                 );
@@ -777,6 +859,7 @@ export function FlightLayers({
             source: currentFlights,
             revision: viewportRevision,
             selectedId: selectedIdForCull,
+            followId,
             fpvId,
             result: currentFlightsForRender,
           };
@@ -820,16 +903,21 @@ export function FlightLayers({
           );
         }
 
-        // FPV position output - O(1) Map lookup instead of O(n) find
+        // Camera tracking output - use the exact position rendered this frame.
+        // FPV takes priority; ordinary follow mode shares the same ref so its
+        // camera cannot oscillate between raw poll positions and interpolated
+        // aircraft positions.
         const fpvPosOut = fpvPosRef.current;
-        if (fpvPosOut && fpvId) {
-          const fpvF = interpolatedMapRef.current.get(fpvId) ?? null;
+        const trackingId = fpvId ?? followId;
+        if (fpvPosOut && trackingId) {
+          const fpvF = interpolatedMapRef.current.get(trackingId) ?? null;
           if (
             fpvF &&
             Number.isFinite(fpvF.longitude) &&
             Number.isFinite(fpvF.latitude)
           ) {
             fpvPosOut.current = {
+              icao24: trackingId,
               lng: fpvF.longitude!,
               lat: fpvF.latitude!,
               alt: Number.isFinite(fpvF.baroAltitude)
@@ -840,7 +928,7 @@ export function FlightLayers({
           } else {
             fpvPosOut.current = null;
           }
-        } else if (fpvPosOut && !fpvId) {
+        } else if (fpvPosOut && !trackingId) {
           fpvPosOut.current = null;
         }
 

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { NextResponse, type NextRequest } from "next/server";
 
 import {
@@ -14,6 +16,31 @@ export const maxDuration = 60;
 
 const MAX_RESPONSE_BYTES = 4_000_000;
 
+type RadarTransportFlight = Pick<
+  RadarSnapshot["flights"][number],
+  | "id"
+  | "icao24"
+  | "flightNumber"
+  | "callsign"
+  | "airline"
+  | "origin"
+  | "destination"
+  | "latitude"
+  | "longitude"
+  | "altitudeFt"
+  | "speedKt"
+  | "headingDeg"
+  | "verticalRateFpm"
+  | "aircraftType"
+  | "tailNumber"
+  | "onGround"
+  | "isGlider"
+>;
+
+type SerializableRadarSnapshot = Omit<RadarSnapshot, "flights"> & {
+  flights: Array<RadarSnapshot["flights"][number] | RadarTransportFlight>;
+};
+
 function modeFromRequest(value: string | null): RadarMode {
   return value === "nearby" ? "nearby" : "global";
 }
@@ -27,8 +54,34 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
-function serializeWithinLimit(snapshot: RadarSnapshot) {
-  let responseSnapshot = snapshot;
+function compactFlight(
+  flight: RadarSnapshot["flights"][number],
+): RadarTransportFlight {
+  return {
+    id: flight.id,
+    icao24: flight.icao24,
+    flightNumber: flight.flightNumber,
+    callsign: flight.callsign,
+    airline: flight.airline,
+    origin: flight.origin,
+    destination: flight.destination,
+    latitude: flight.latitude,
+    longitude: flight.longitude,
+    altitudeFt: flight.altitudeFt,
+    speedKt: flight.speedKt,
+    headingDeg: flight.headingDeg,
+    verticalRateFpm: flight.verticalRateFpm,
+    aircraftType: flight.aircraftType,
+    tailNumber: flight.tailNumber,
+    onGround: flight.onGround,
+    isGlider: flight.isGlider,
+  };
+}
+
+function serializeWithinLimit(snapshot: RadarSnapshot, compact: boolean) {
+  let responseSnapshot: SerializableRadarSnapshot = compact
+    ? { ...snapshot, flights: snapshot.flights.map(compactFlight) }
+    : snapshot;
   let body = JSON.stringify({ data: responseSnapshot });
   let byteLength = Buffer.byteLength(body);
   let truncated = false;
@@ -61,8 +114,29 @@ function serializeWithinLimit(snapshot: RadarSnapshot) {
   return { body, truncated };
 }
 
+function responseEtag(body: string) {
+  const digest = createHash("sha256")
+    .update(body)
+    .digest("base64url")
+    .slice(0, 27);
+  return `"${digest}"`;
+}
+
+function etagMatches(headerValue: string | null, etag: string) {
+  if (!headerValue) return false;
+  const normalizedEtag = etag.replace(/^W\//, "").replace(/^"|"$/g, "");
+  return headerValue.split(",").some((candidate) => {
+    const value = candidate.trim();
+    const normalizedValue = value
+      .replace(/^W\//, "")
+      .replace(/^"|"$/g, "");
+    return value === "*" || normalizedValue === normalizedEtag;
+  });
+}
+
 export async function GET(request: NextRequest) {
   const mode = modeFromRequest(request.nextUrl.searchParams.get("mode"));
+  const compact = request.nextUrl.searchParams.get("compact") === "1";
   const latitude = clamp(
     numberFromRequest(request.nextUrl.searchParams.get("lat"), 24),
     -85,
@@ -100,7 +174,8 @@ export async function GET(request: NextRequest) {
     radiusNm,
     limit,
   });
-  const { body, truncated } = serializeWithinLimit(snapshot);
+  const { body, truncated } = serializeWithinLimit(snapshot, compact);
+  const etag = responseEtag(body);
   const headers = new Headers({
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control":
@@ -117,6 +192,11 @@ export async function GET(request: NextRequest) {
   }
   if (truncated) {
     headers.set("X-Airtraffic24-Truncated", "1");
+  }
+  headers.set("ETag", etag);
+
+  if (etagMatches(request.headers.get("If-None-Match"), etag)) {
+    return new NextResponse(null, { status: 304, headers });
   }
 
   return new NextResponse(body, { headers });

@@ -19,9 +19,18 @@ export type DeckGLOverlay = MapboxOverlay & {
 // ── Animation & rendering constants ────────────────────────────────────
 
 export const DEFAULT_ANIM_DURATION_MS = 30_000;
-export const MIN_ANIM_DURATION_MS = 8_000;
+export const MIN_ANIM_DURATION_MS = 4_500;
 export const MAX_ANIM_DURATION_MS = 60_000;
-export const TELEPORT_THRESHOLD = 0.3;
+export const MIN_CADENCE_BUFFER_MS = 150;
+export const MAX_CADENCE_BUFFER_MS = 1_200;
+export const CADENCE_BUFFER_RATIO = 0.03;
+/**
+ * Maximum plausible movement between live snapshots before treating the new
+ * coordinate as a provider correction/teleport. This preserves the old
+ * 0.3-degree equatorial limit while remaining physically consistent at high
+ * latitudes and across the antimeridian.
+ */
+export const TELEPORT_THRESHOLD_METERS = 33_400;
 export const TRAIL_BELOW_AIRCRAFT_METERS = 40;
 export const STARTUP_TRAIL_POLLS = 3;
 export const STARTUP_TRAIL_STEP_SEC = 12;
@@ -78,8 +87,10 @@ export type FlightLayerProps = {
   altitudeDisplayMode: AltitudeDisplayMode;
   globeMode?: boolean;
   force2DMarkers?: boolean;
+  followIcao24?: string | null;
   fpvIcao24?: string | null;
   fpvPositionRef?: MutableRefObject<{
+    icao24: string;
     lng: number;
     lat: number;
     alt: number;

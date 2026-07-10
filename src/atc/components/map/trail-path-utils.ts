@@ -6,6 +6,7 @@
 
 import type { FlightState } from "@/atc/lib/opensky";
 import type { ElevatedPoint } from "./flight-layer-constants";
+import { horizontalDistanceFromLngLat } from "./flight-math";
 import {
   STARTUP_TRAIL_POLLS,
   STARTUP_TRAIL_STEP_SEC,
@@ -41,18 +42,17 @@ export function buildStartupFallbackTrail(f: FlightState): [number, number][] {
 export function trimAfterLargeJump(
   path: [number, number][],
   altitudes: Array<number | null>,
-  maxJumpDeg: number,
+  maxJumpMeters: number,
 ): { path: [number, number][]; altitudes: Array<number | null> } {
   if (path.length < 2) return { path, altitudes };
 
-  const maxJumpSq = maxJumpDeg * maxJumpDeg;
   let start = 0;
   for (let i = path.length - 2; i >= 0; i--) {
     const a = path[i];
     const b = path[i + 1];
-    const dx = b[0] - a[0];
-    const dy = b[1] - a[1];
-    if (dx * dx + dy * dy > maxJumpSq) {
+    if (
+      horizontalDistanceFromLngLat(a[0], a[1], b[0], b[1]) > maxJumpMeters
+    ) {
       start = i + 1;
       break;
     }

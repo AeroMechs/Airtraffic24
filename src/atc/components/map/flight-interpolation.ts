@@ -1,16 +1,24 @@
 import type { FlightState } from "@/atc/lib/opensky";
 import type { TrailEntry } from "@/atc/hooks/use-trail-history";
 import type { Snapshot } from "./flight-layer-constants";
-import { TELEPORT_THRESHOLD } from "./flight-layer-constants";
+import { TELEPORT_THRESHOLD_METERS } from "./flight-layer-constants";
 import {
+  interpolateLongitude,
   lerpAngle,
   horizontalDistanceFromLngLat,
   horizontalDistanceMeters,
+  metersPerDegreeLongitude,
+  wrappedLongitudeDelta,
 } from "./flight-math";
 
 const MIN_DISPLAY_TRACK_DISTANCE_METERS = 15;
 export const FLIGHT_RENDER_STALE_MS = 15_000;
-export const MAX_FLIGHT_EXTRAPOLATION_MS = 2_000;
+/**
+ * Do not render past the latest authoritative snapshot. The previous 2s
+ * dead-reckoning window overshot each segment, then jumped backwards when the
+ * next poll rebased from the authoritative endpoint.
+ */
+export const MAX_FLIGHT_EXTRAPOLATION_MS = 0;
 
 export function getSafeInterpolationProgress(input: {
   elapsedMs: number;
@@ -56,8 +64,12 @@ function bearingFromLngLat(
   previousPosition: { lng: number; lat: number },
   currentPosition: { lng: number; lat: number },
 ): number | null {
-  const dx = currentPosition.lng - previousPosition.lng;
-  const dy = currentPosition.lat - previousPosition.lat;
+  const averageLatitude = (previousPosition.lat + currentPosition.lat) * 0.5;
+  const eastMeters =
+    wrappedLongitudeDelta(previousPosition.lng, currentPosition.lng) *
+    metersPerDegreeLongitude(averageLatitude);
+  const northMeters =
+    (currentPosition.lat - previousPosition.lat) * 111_320;
   const distanceMeters = horizontalDistanceFromLngLat(
     previousPosition.lng,
     previousPosition.lat,
@@ -69,7 +81,9 @@ function bearingFromLngLat(
     return null;
   }
 
-  return normalizeBearing((Math.atan2(dx, dy) * 180) / Math.PI);
+  return normalizeBearing(
+    (Math.atan2(eastMeters, northMeters) * 180) / Math.PI,
+  );
 }
 
 export function resolveDisplayTrack(input: {
@@ -237,9 +251,8 @@ export function computeInterpolatedFlights(
       };
     }
 
-    const dx = curr.lng - prev.lng;
     const dy = curr.lat - prev.lat;
-    if (dx * dx + dy * dy > TELEPORT_THRESHOLD * TELEPORT_THRESHOLD) {
+    if (horizontalDistanceMeters(prev, curr) > TELEPORT_THRESHOLD_METERS) {
       return f;
     }
 
@@ -247,7 +260,7 @@ export function computeInterpolatedFlights(
       const blendedTrack = lerpAngle(prev.track, curr.track, tAngle);
       return {
         ...f,
-        longitude: prev.lng + dx * tPos,
+        longitude: interpolateLongitude(prev.lng, curr.lng, tPos),
         latitude: prev.lat + dy * tPos,
         baroAltitude: prev.alt + (curr.alt - prev.alt) * tPos,
         trueTrack: resolveDisplayTrack({
@@ -263,7 +276,9 @@ export function computeInterpolatedFlights(
       Number.isFinite(f.velocity) && f.velocity! > 0 ? f.velocity! : 200;
     const extraSec = ((rawT - 1) * animDuration) / 1000;
     const extraDeg = Math.min((speed * extraSec) / 111_320, 0.03);
-    const moveDx = Math.sin(heading) * extraDeg;
+    const moveDx =
+      (Math.sin(heading) * speed * extraSec) /
+      metersPerDegreeLongitude(curr.lat);
     const moveDy = Math.cos(heading) * extraDeg;
     // Continue climb/descent using vertical rate, capped at ±500m
     const vr = Number.isFinite(f.verticalRate) ? f.verticalRate! : 0;
@@ -330,12 +345,13 @@ export function updateInterpolatedInPlace(
       continue;
     }
 
-    const dx = curr.lng - prev.lng;
     const dy = curr.lat - prev.lat;
-    if (dx * dx + dy * dy > TELEPORT_THRESHOLD * TELEPORT_THRESHOLD) continue;
+    if (horizontalDistanceMeters(prev, curr) > TELEPORT_THRESHOLD_METERS) {
+      continue;
+    }
 
     if (rawT <= 1) {
-      o.longitude = prev.lng + dx * tPos;
+      o.longitude = interpolateLongitude(prev.lng, curr.lng, tPos);
       o.latitude = prev.lat + dy * tPos;
       o.baroAltitude = prev.alt + (curr.alt - prev.alt) * tPos;
       o.trueTrack = resolveDisplayTrack({
@@ -349,7 +365,9 @@ export function updateInterpolatedInPlace(
         Number.isFinite(f.velocity) && f.velocity! > 0 ? f.velocity! : 200;
       const extraSec = ((rawT - 1) * animDuration) / 1000;
       const extraDeg = Math.min((speed * extraSec) / 111_320, 0.03);
-      const moveDx = Math.sin(heading) * extraDeg;
+      const moveDx =
+        (Math.sin(heading) * speed * extraSec) /
+        metersPerDegreeLongitude(curr.lat);
       const moveDy = Math.cos(heading) * extraDeg;
       const vr = Number.isFinite(f.verticalRate) ? f.verticalRate! : 0;
       const extraAlt = Math.max(-500, Math.min(500, vr * extraSec));

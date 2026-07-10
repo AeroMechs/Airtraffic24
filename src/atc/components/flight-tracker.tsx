@@ -100,6 +100,61 @@ type FlightTrackerProps = {
   initialCity?: City;
 };
 
+type RetainedFlight = {
+  icao24: string;
+  flight: FlightState;
+};
+
+/**
+ * Keeps the last real provider observation for one active tracker ID.
+ *
+ * Missing provider snapshots are handled by useFlightMonitors. Returning the
+ * retained observation here keeps the details and camera mounted until those
+ * existing grace periods decide that the aircraft is genuinely gone. The ID
+ * guard prevents a previous aircraft from ever being shown for a new target.
+ */
+function useRetainedFlight(
+  icao24: string | null,
+  liveFlight: FlightState | null,
+): FlightState | null {
+  const normalizedIcao24 = icao24?.toLowerCase() ?? null;
+  const matchingLiveFlight =
+    normalizedIcao24 &&
+    liveFlight?.icao24.toLowerCase() === normalizedIcao24
+      ? liveFlight
+      : null;
+  const [retained, setRetained] = useState<RetainedFlight | null>(null);
+
+  // React's supported "adjusting state while rendering" pattern keeps the
+  // newest real observation available synchronously, without an effect-frame
+  // where the camera could briefly receive null and tear itself down.
+  if (!normalizedIcao24) {
+    if (retained) setRetained(null);
+    return null;
+  }
+
+  if (matchingLiveFlight) {
+    if (
+      retained?.icao24 !== normalizedIcao24 ||
+      retained.flight !== matchingLiveFlight
+    ) {
+      setRetained({
+        icao24: normalizedIcao24,
+        flight: matchingLiveFlight,
+      });
+    }
+    return matchingLiveFlight;
+  }
+
+  // A different target never inherits the previous target's cached state.
+  if (retained?.icao24 !== normalizedIcao24) {
+    if (retained) setRetained(null);
+    return null;
+  }
+
+  return retained.flight;
+}
+
 function FlightTrackerInner({
   airspaceAvailable = true,
   aircraftShadows = true,
@@ -140,6 +195,7 @@ function FlightTrackerInner({
   const pendingFpvRef = useRef<string | null>(resolveInitialFpv());
 
   const fpvPositionRef = useRef<{
+    icao24: string;
     lng: number;
     lat: number;
     alt: number;
@@ -322,7 +378,7 @@ function FlightTrackerInner({
     return m;
   }, [displayFlights]);
 
-  const selectedFlight = useMemo(() => {
+  const liveSelectedFlight = useMemo(() => {
     if (!selectedIcao24) return null;
     return displayFlightMap.get(selectedIcao24) ?? null;
   }, [selectedIcao24, displayFlightMap]);
@@ -332,15 +388,22 @@ function FlightTrackerInner({
     return mergedTrails.find((t) => t.icao24 === selectedIcao24) ?? null;
   }, [selectedIcao24, mergedTrails]);
 
-  const followFlight = useMemo(() => {
+  const liveFollowFlight = useMemo(() => {
     if (!followIcao24) return null;
     return displayFlightMap.get(followIcao24) ?? null;
   }, [followIcao24, displayFlightMap]);
 
-  const fpvFlight = useMemo(() => {
+  const liveFpvFlight = useMemo(() => {
     if (!fpvIcao24) return null;
     return displayFlightMap.get(fpvIcao24) ?? null;
   }, [fpvIcao24, displayFlightMap]);
+
+  const selectedFlight = useRetainedFlight(
+    selectedIcao24,
+    liveSelectedFlight,
+  );
+  const followFlight = useRetainedFlight(followIcao24, liveFollowFlight);
+  const fpvFlight = useRetainedFlight(fpvIcao24, liveFpvFlight);
 
   useEffect(() => {
     syncFpvToUrl(fpvIcao24, activeCity);
@@ -349,11 +412,11 @@ function FlightTrackerInner({
   useFlightMonitors({
     pendingFpvRef,
     fpvIcao24,
-    fpvFlight,
+    fpvFlight: liveFpvFlight,
     followIcao24,
-    followFlight,
+    followFlight: liveFollowFlight,
     selectedIcao24,
-    selectedFlight,
+    selectedFlight: liveSelectedFlight,
     displayFlights,
     activeCity,
     rateLimited,
@@ -414,7 +477,6 @@ function FlightTrackerInner({
       setSelectedIcao24(nextIcao24);
       setFollowIcao24(
         nextFlight &&
-          !nextFlight.onGround &&
           nextFlight.longitude != null &&
           nextFlight.latitude != null
           ? nextIcao24
@@ -449,7 +511,6 @@ function FlightTrackerInner({
         setSelectedIcao24(nextIcao24);
         setFollowIcao24(
           nextIcao24 &&
-            !info.object.onGround &&
             info.object.longitude != null &&
             info.object.latitude != null
             ? nextIcao24
@@ -587,7 +648,6 @@ function FlightTrackerInner({
       setSelectedIcao24(f.icao24);
       setFollowIcao24(
         !enterFpv &&
-          !f.onGround &&
           f.longitude != null &&
           f.latitude != null
           ? f.icao24
@@ -768,6 +828,7 @@ function FlightTrackerInner({
             fpvFlight={fpvFlightOrCached}
             fpvCameraMode={fpvCameraMode}
             fpvPositionRef={fpvPositionRef}
+            panelOpen={desktopLeftPanelOpen}
           />
           <MapStateTracker
             stateRef={mapStateRef}
@@ -805,6 +866,7 @@ function FlightTrackerInner({
             altitudeDisplayMode={settings.altitudeDisplayMode}
             globeMode={settings.globeMode}
             force2DMarkers={force2DMarkers}
+            followIcao24={followIcao24}
             fpvIcao24={fpvIcao24}
             fpvPositionRef={fpvPositionRef}
           />

@@ -141,7 +141,7 @@ export function StatusBar({
                   ? "Live traffic temporarily unavailable"
                   : "Refresh delayed · showing last real positions"}
             </span>
-            {rateLimited && retryIn > 0 && (
+            {retryIn > 0 && (
               <>
                 <div className="h-3 w-px bg-amber-400/10" />
                 <span className="font-mono text-[11px] font-semibold tabular-nums text-amber-400/60">

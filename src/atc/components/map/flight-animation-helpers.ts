@@ -7,6 +7,8 @@
 export {
   lerpAngle,
   smoothStep,
+  interpolateLongitude,
+  wrappedLongitudeDelta,
   horizontalDistanceFromLngLat,
   horizontalDistanceMeters,
 } from "./flight-math";

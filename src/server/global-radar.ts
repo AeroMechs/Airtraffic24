@@ -78,11 +78,13 @@ type RadarPreset = "default" | "noFaa" | "adsbOnly" | "allTraffic";
 type CacheEntry = {
   expiresAt: number;
   staleUntil: number;
+  generatedAt: string;
   flights: RadarFlight[];
 };
 
 type CachedResult = {
   flights: RadarFlight[];
+  generatedAt: string;
   stale: boolean;
   partial?: boolean;
 };
@@ -105,6 +107,13 @@ const MAX_CACHE_ENTRIES = 64;
 
 const cache = new Map<string, CacheEntry>();
 const pending = new Map<string, Promise<CachedResult>>();
+
+class RadarTileTimeoutError extends Error {
+  constructor() {
+    super("Radar tile timeout");
+    this.name = "RadarTileTimeoutError";
+  }
+}
 
 function readCacheEntry(key: string) {
   const entry = cache.get(key);
@@ -311,7 +320,7 @@ function tileContains(
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Radar tile timeout")), timeoutMs);
+    timer = setTimeout(() => reject(new RadarTileTimeoutError()), timeoutMs);
   });
 
   return Promise.race([promise, timeout]).finally(() => {
@@ -427,6 +436,7 @@ async function fetchTile(
   const collected: RadarFlight[] = [];
   const minUsefulRows = tile.minUsefulRows ?? TILE_MIN_USEFUL_ROWS;
   let complete = true;
+  let receivedResponse = false;
 
   for (const preset of tile.presets) {
     const remainingMs = deadlineAt - Date.now();
@@ -447,6 +457,7 @@ async function fetchTile(
         ),
         Math.min(TILE_TIMEOUT_MS, remainingMs),
       );
+      receivedResponse = true;
       const flights = aircraft
         .map((item, index) =>
           toRadarFlight(item, index, `${tile.id}:${preset}`),
@@ -455,13 +466,22 @@ async function fetchTile(
 
       collected.push(...flights);
       if (flights.length >= minUsefulRows) break;
-    } catch {
-      if (Date.now() >= deadlineAt) complete = false;
+    } catch (error) {
+      if (error instanceof RadarTileTimeoutError || Date.now() >= deadlineAt) {
+        complete = false;
+        // The provider client cannot abort its underlying request. Do not
+        // start more preset requests for this tile while the timed-out one
+        // is still winding down.
+        break;
+      }
       continue;
     }
   }
 
-  return { flights: dedupe(collected), complete };
+  return {
+    flights: dedupe(collected),
+    complete: complete && receivedResponse,
+  };
 }
 
 async function fetchUncached({
@@ -531,7 +551,11 @@ async function fetchRadarFlights(query: RadarQuery): Promise<CachedResult> {
   const cached = readCacheEntry(key);
 
   if (cached && cached.expiresAt > now) {
-    return { flights: cached.flights, stale: false };
+    return {
+      flights: cached.flights,
+      generatedAt: cached.generatedAt,
+      stale: false,
+    };
   }
 
   const inflight = pending.get(key);
@@ -539,30 +563,45 @@ async function fetchRadarFlights(query: RadarQuery): Promise<CachedResult> {
 
   const request = fetchUncached(query)
     .then((result) => {
+      const generatedAt = new Date().toISOString();
       if (result.complete && result.flights.length > 0) {
         writeCacheEntry(key, {
           expiresAt: Date.now() + CACHE_TTL_MS,
           staleUntil: Date.now() + STALE_TTL_MS,
+          generatedAt,
           flights: result.flights,
         });
-        return { flights: result.flights, stale: false };
+        return { flights: result.flights, generatedAt, stale: false };
       }
 
       if (cached && cached.staleUntil > Date.now()) {
-        return { flights: cached.flights, stale: true };
+        return {
+          flights: cached.flights,
+          generatedAt: cached.generatedAt,
+          stale: true,
+        };
       }
 
       return {
         flights: result.flights,
+        generatedAt,
         stale: true,
         partial: result.flights.length > 0 && !result.complete,
       };
     })
     .catch(() => {
       if (cached && cached.staleUntil > Date.now()) {
-        return { flights: cached.flights, stale: true };
+        return {
+          flights: cached.flights,
+          generatedAt: cached.generatedAt,
+          stale: true,
+        };
       }
-      return { flights: [], stale: true };
+      return {
+        flights: [],
+        generatedAt: new Date().toISOString(),
+        stale: true,
+      };
     })
     .finally(() => pending.delete(key));
 
@@ -619,7 +658,7 @@ export async function getGlobalRadarSnapshot({
 
   return {
     mode,
-    generatedAt: new Date().toISOString(),
+    generatedAt: result.generatedAt,
     source,
     sourceDetail: detail,
     center,

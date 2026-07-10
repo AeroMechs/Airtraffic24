@@ -8,18 +8,16 @@ import type { City } from "@/atc/lib/cities";
 import type { FlightState } from "@/atc/lib/opensky";
 import type { AircraftCameraMode } from "@/atc/lib/aircraft-camera-mode";
 import { useFpvCamera } from "./use-fpv-camera";
+import {
+  useFollowCamera,
+  type TrackedAircraftPosition,
+} from "./use-follow-camera";
 import { useKeyboardCamera } from "./use-keyboard-camera";
 import { useOrbitCamera } from "./use-orbit-camera";
 
 const DEFAULT_ZOOM = 9.2;
 const DEFAULT_PITCH = 49;
 const DEFAULT_BEARING = 27.4;
-const FOLLOW_ZOOM = 10.5;
-const FOLLOW_PITCH = 55;
-const FOLLOW_EASE_MS = 2000;
-
-type FpvPosition = { lng: number; lat: number; alt: number; track: number };
-
 export function CameraController({
   city,
   cityZoom = DEFAULT_ZOOM,
@@ -27,34 +25,38 @@ export function CameraController({
   fpvFlight = null,
   fpvCameraMode = "rear",
   fpvPositionRef,
+  panelOpen = false,
 }: {
   city: City;
   cityZoom?: number;
   followFlight?: FlightState | null;
   fpvFlight?: FlightState | null;
   fpvCameraMode?: AircraftCameraMode;
-  fpvPositionRef?: MutableRefObject<FpvPosition | null>;
+  fpvPositionRef?: MutableRefObject<TrackedAircraftPosition | null>;
+  panelOpen?: boolean;
 }) {
   const { map, isLoaded } = useMap();
   const { settings } = useSettings();
   const prevCityRef = useRef<string | null>(null);
-  const prevFollowRef = useRef<string | null>(null);
   const prevFpvRef = useRef<string | null>(null);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const orbitFrameRef = useRef<number | null>(null);
   const isInteractingRef = useRef(false);
   const isFollowingRef = useRef(false);
-  const followFlyToActiveRef = useRef(false);
-  const followFlyToTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
   const isFpvActiveRef = useRef(false);
+  const followFlightRef = useRef<FlightState | null>(followFlight);
   const fpvFlightRef = useRef<FlightState | null>(fpvFlight);
   const fpvPosRef = useRef(fpvPositionRef);
+  const followFlightKey = followFlight?.icao24 ?? null;
+  const fpvFlightKey = fpvFlight?.icao24 ?? null;
 
   useEffect(() => {
     fpvPosRef.current = fpvPositionRef;
   }, [fpvPositionRef]);
+
+  useEffect(() => {
+    followFlightRef.current = followFlight;
+  }, [followFlight]);
 
   useEffect(() => {
     fpvFlightRef.current = fpvFlight;
@@ -64,6 +66,12 @@ export function CameraController({
   useEffect(() => {
     if (!map || !isLoaded || !city) return;
     const cityViewKey = `${city.id}:${cityZoom.toFixed(2)}`;
+    if (followFlightKey || fpvFlightKey) {
+      // Record the requested city without starting a second transition while
+      // an aircraft camera owns the map.
+      prevCityRef.current = cityViewKey;
+      return;
+    }
     if (cityViewKey === prevCityRef.current) return;
 
     prevCityRef.current = cityViewKey;
@@ -75,77 +83,27 @@ export function CameraController({
       duration: 2800,
       essential: true,
     });
-  }, [map, isLoaded, city, cityZoom]);
-
-  // Follow flight init
-  useEffect(() => {
-    if (!map || !isLoaded) return;
-
-    const followKey = followFlight?.icao24 ?? null;
-    if (followKey === prevFollowRef.current) return;
-    prevFollowRef.current = followKey;
-
-    if (followFlyToTimerRef.current) {
-      clearTimeout(followFlyToTimerRef.current);
-      followFlyToTimerRef.current = null;
-    }
-    followFlyToActiveRef.current = false;
-
-    if (
-      !followFlight ||
-      followFlight.longitude == null ||
-      followFlight.latitude == null
-    ) {
-      isFollowingRef.current = false;
-      return;
-    }
-
-    isFollowingRef.current = true;
-    followFlyToActiveRef.current = true;
-    const bearing = Number.isFinite(followFlight.trueTrack)
-      ? followFlight.trueTrack!
-      : map.getBearing();
-
-    const FOLLOW_FLYTO_MS = 2200;
-    map.flyTo({
-      center: [followFlight.longitude, followFlight.latitude],
-      zoom: FOLLOW_ZOOM,
-      pitch: FOLLOW_PITCH,
-      bearing,
-      duration: FOLLOW_FLYTO_MS,
-      essential: true,
-    });
-
-    followFlyToTimerRef.current = setTimeout(() => {
-      followFlyToActiveRef.current = false;
-      followFlyToTimerRef.current = null;
-    }, FOLLOW_FLYTO_MS);
-  }, [map, isLoaded, followFlight]);
-
-  // Follow flight continuous update
-  useEffect(() => {
-    if (!map || !isLoaded || !followFlight) return;
-    if (followFlight.longitude == null || followFlight.latitude == null) return;
-
-    if (!isFollowingRef.current) return;
-    if (followFlyToActiveRef.current) return;
-
-    map.easeTo({
-      center: [followFlight.longitude, followFlight.latitude],
-      bearing: Number.isFinite(followFlight.trueTrack)
-        ? followFlight.trueTrack!
-        : map.getBearing(),
-      duration: FOLLOW_EASE_MS,
-      essential: true,
-    });
   }, [
     map,
     isLoaded,
-    followFlight,
-    followFlight?.longitude,
-    followFlight?.latitude,
-    followFlight?.trueTrack,
+    city,
+    cityZoom,
+    followFlightKey,
+    fpvFlightKey,
   ]);
+
+  // The regular selected-aircraft camera follows the exact interpolated
+  // renderer position through one RAF loop. This avoids chasing feed samples.
+  useFollowCamera(
+    map,
+    isLoaded,
+    followFlight,
+    followFlightRef,
+    fpvPosRef,
+    isFollowingRef,
+    settings.altitudeDisplayMode,
+    panelOpen,
+  );
 
   // FPV camera hook
   useFpvCamera(
@@ -168,7 +126,7 @@ export function CameraController({
     let northUpRafId: number | undefined;
 
     const onNorthUp = () => {
-      if (isFpvActiveRef.current) return;
+      if (isFpvActiveRef.current || isFollowingRef.current) return;
       if (northUpRafId != null) cancelAnimationFrame(northUpRafId);
       if (!map) return;
       const m = map;
@@ -200,7 +158,7 @@ export function CameraController({
     };
 
     const onResetView = (event: Event) => {
-      if (isFpvActiveRef.current) return;
+      if (isFpvActiveRef.current || isFollowingRef.current) return;
       const customEvent = event as CustomEvent<{ center?: [number, number] }>;
       const center = customEvent.detail?.center ?? city.coordinates;
       map.flyTo({
