@@ -1,12 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { motion, AnimatePresence } from "motion/react";
-import {
-  ChevronDown,
-  Cloud,
-  Loader2,
-} from "lucide-react";
+import { Cloud, Loader2 } from "lucide-react";
 import type { UnitSystem } from "@/atc/hooks/use-settings";
 import type { FlightRouteInfo } from "@/atc/hooks/use-route-info";
 import {
@@ -32,10 +27,9 @@ function AirportWeatherCompact({
 }) {
   const [tafOpen, setTafOpen] = useState(false);
   const { metar, loading: metarLoading } = useMetar(icao);
-  const { taf, loading: tafLoading } = useTaf(icao);
+  const { taf, loading: tafLoading } = useTaf(tafOpen ? icao : null);
 
-  const hasData = metar || metarLoading || taf || tafLoading;
-  if (!icao || !hasData) return null;
+  if (!icao) return null;
 
   return (
     <div className="space-y-2.5">
@@ -58,39 +52,13 @@ function AirportWeatherCompact({
         unitSystem={unitSystem}
       />
 
-      {(tafLoading || taf) && (
-        <div>
-          <button
-            type="button"
-            onClick={() => setTafOpen((o) => !o)}
-            className="flex min-h-9 w-full items-center gap-2 rounded-[14px] px-2 text-left transition-colors hover:bg-foreground/[0.04] active:bg-foreground/[0.07]"
-            aria-expanded={tafOpen}
-          >
-            <span className="text-[12px] font-medium text-foreground/55">
-              Forecast
-            </span>
-            <ChevronDown
-              className={`ml-auto h-3.5 w-3.5 text-foreground/24 transition-transform duration-200 ${tafOpen ? "rotate-180" : ""}`}
-            />
-          </button>
-          <AnimatePresence initial={false}>
-            {tafOpen && (
-              <motion.div
-                key="taf"
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.2, ease: "easeInOut" }}
-                className="overflow-hidden"
-              >
-                <div className="pt-1.5">
-                  <TafSection taf={taf} loading={tafLoading} />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
+      <TafSection
+        taf={taf}
+        loading={tafLoading}
+        expanded={tafOpen}
+        onExpandedChange={setTafOpen}
+        alwaysVisible
+      />
     </div>
   );
 }

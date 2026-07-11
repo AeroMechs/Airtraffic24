@@ -1,8 +1,17 @@
 "use client";
 
-import type { ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { motion } from "motion/react";
 import {
+  Check,
   RotateCw,
   Route,
   Layers,
@@ -14,7 +23,9 @@ import {
   Eye,
   CloudRain,
   Cpu,
+  Gauge,
   ChevronDown,
+  Search,
 } from "lucide-react";
 import {
   useSettings,
@@ -67,6 +78,31 @@ const UNIT_SYSTEMS: { label: string; value: UnitSystem }[] = [
   { label: "Imperial", value: "imperial" },
 ];
 
+const RENDER_QUALITY_OPTIONS: {
+  label: string;
+  value: Settings["renderQuality"];
+  description: string;
+}[] = [
+  {
+    label: "Data Saver",
+    value: "data-saver",
+    description:
+      "Reduces aircraft detail and visual effects to keep older and mobile devices smooth.",
+  },
+  {
+    label: "Medium",
+    value: "balanced",
+    description:
+      "Keeps detailed aircraft while adapting the workload for most devices.",
+  },
+  {
+    label: "High",
+    value: "high",
+    description:
+      "Uses the richest aircraft detail and visual effects on capable hardware.",
+  },
+];
+
 export function SettingsContent({
   airspaceAvailable = true,
 }: {
@@ -77,7 +113,7 @@ export function SettingsContent({
 
   return (
     <ScrollArea className="h-full">
-      <div className="space-y-0.5 p-3 pt-1">
+      <div className="space-y-0.5 px-2 pb-6 pt-1 sm:px-3">
         {/* ── Camera ── */}
         <SectionHeader title="Camera" />
 
@@ -206,6 +242,11 @@ export function SettingsContent({
         {/* ── Performance ── */}
         <SectionHeader title="Performance" />
 
+        <RenderQualityControl
+          value={settings.renderQuality}
+          onChange={(v) => update("renderQuality", v)}
+        />
+
         <SettingRow
           icon={<Globe className="h-4 w-4" />}
           title="Globe mode"
@@ -226,19 +267,15 @@ export function SettingsContent({
           onChange={(v) => update("showDebugData", v)}
         />
 
-        <div className="mx-3 my-2 h-px bg-foreground/8" />
-
-        <div className="px-3 pt-2">
+        <div className="border-t border-foreground/8 px-3 pt-4">
           <button
             type="button"
             onClick={reset}
-            className="inline-flex h-8 items-center justify-center rounded-lg px-3 text-[12px] font-medium text-foreground/75 ring-1 ring-foreground/12 transition-colors hover:bg-foreground/5 hover:text-foreground/90"
+            className="inline-flex min-h-10 items-center justify-center rounded-lg px-3 text-sm font-medium text-foreground/75 ring-1 ring-foreground/12 hover:bg-foreground/5 hover:text-foreground/90 sm:min-h-8 sm:text-xs"
           >
-            Reset to defaults
+            Reset to Defaults
           </button>
         </div>
-
-        <div className="mx-3 my-2 h-px bg-foreground/8" />
       </div>
     </ScrollArea>
   );
@@ -275,6 +312,14 @@ function RadarCountrySelect({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const id = useId().replace(/:/g, "");
+  const listboxId = `${id}-radar-countries`;
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
   const coverage = getRadarCountryCoverage(value);
   const selectedLabel =
     value === WORLD_RADAR_COUNTRY ? "World" : (coverage?.label ?? "World");
@@ -285,42 +330,318 @@ function RadarCountrySelect({
         ? `${coverage.airportCount.toLocaleString()} indexed airports, ${coverage.radiusNm.toLocaleString()} NM coverage`
         : "All available live regional tiles";
 
+  const options = useMemo(
+    () => [
+      {
+        code: WORLD_RADAR_COUNTRY,
+        label: "World",
+        airportCount: null,
+        radiusNm: null,
+      },
+      ...RADAR_COUNTRY_OPTIONS,
+    ],
+    [],
+  );
+  const filteredOptions = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase();
+    if (!normalizedQuery) return options;
+    return options.filter(
+      (option) =>
+        option.label.toLocaleLowerCase().includes(normalizedQuery) ||
+        option.code.toLocaleLowerCase().includes(normalizedQuery),
+    );
+  }, [options, query]);
+  const activeOption = filteredOptions[activeIndex] ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    inputRef.current?.focus();
+
+    const dismiss = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !activeOption) return;
+    document
+      .getElementById(`${listboxId}-${activeOption.code}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeOption, listboxId, open]);
+
+  const openSelector = () => {
+    setQuery("");
+    setActiveIndex(
+      Math.max(
+        0,
+        options.findIndex((option) => option.code === value),
+      ),
+    );
+    setOpen(true);
+  };
+
+  const selectOption = (code: string) => {
+    onChange(code);
+    setOpen(false);
+    setQuery("");
+    triggerRef.current?.focus();
+  };
+
+  const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+      return;
+    }
+
+    if (!filteredOptions.length) return;
+
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      setActiveIndex(
+        (current) =>
+          (current + direction + filteredOptions.length) %
+          filteredOptions.length,
+      );
+      return;
+    }
+
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      setActiveIndex(event.key === "Home" ? 0 : filteredOptions.length - 1);
+      return;
+    }
+
+    if (event.key === "Enter" && activeOption) {
+      event.preventDefault();
+      selectOption(activeOption.code);
+    }
+  };
+
   return (
     <div
-      className="flex w-full items-center gap-3.5 rounded-xl px-3 py-2.5 text-left"
+      ref={rootRef}
+      className="flex w-full flex-col gap-3 px-3 py-3 text-left"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
     >
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-foreground/5 text-foreground/50 ring-1 ring-foreground/8">
-        <Globe className="h-4 w-4" />
+      <div className="flex items-start gap-3">
+        <Globe className="size-4 h-lh shrink-0 stroke-foreground/45" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-foreground/90 sm:text-[13px]">
+            Radar Country
+          </p>
+          <p className="text-xs/5 font-medium text-foreground/45 sm:text-[11px]/4">
+            Choose worldwide traffic or focus live fetching on one country.
+          </p>
+        </div>
       </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-[13px] font-medium text-foreground/85">
-          Radar country
-        </p>
-        <p className="mt-0.5 truncate text-[11px] font-medium text-foreground/40">
-          {detail}
-        </p>
-      </div>
-      <div className="inline-grid w-40 shrink-0 grid-cols-[1fr_--spacing(8)]">
-        <select
-          name="radar-country"
-          aria-label="Radar country coverage"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          className="col-span-full row-start-1 h-8 appearance-none truncate rounded-lg bg-foreground/4 px-2.5 pr-8 text-[11px] font-semibold text-foreground/75 ring-1 ring-foreground/8 outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/45"
-          title={selectedLabel}
-        >
-          <option value={WORLD_RADAR_COUNTRY}>World</option>
-          {RADAR_COUNTRY_OPTIONS.map((country) => (
-            <option key={country.code} value={country.code}>
-              {country.label}
-            </option>
-          ))}
-        </select>
+
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listboxId}
+        onClick={() => (open ? setOpen(false) : openSelector())}
+        onKeyDown={(event) => {
+          if (!open && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+            event.preventDefault();
+            openSelector();
+          }
+        }}
+        className="flex min-h-12 w-full items-center gap-3 rounded-xl bg-foreground/4 px-3 py-2 text-left ring-1 ring-foreground/9 hover:bg-foreground/6 focus-visible:outline-2 focus-visible:outline-emerald-400/55 sm:min-h-10"
+      >
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-foreground/85 sm:text-xs">
+            {selectedLabel}
+          </p>
+          <p className="truncate text-xs text-foreground/40 sm:text-[11px]">
+            {detail}
+          </p>
+        </div>
         <ChevronDown
           aria-hidden="true"
-          className="pointer-events-none col-start-2 row-start-1 h-3 w-3 place-self-center text-foreground/40"
+          className={`size-4 shrink-0 stroke-foreground/40 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
         />
+      </button>
+
+      {open && (
+        <div className="overflow-hidden rounded-xl bg-popover ring-1 ring-foreground/10 shadow-[0_16px_40px_rgba(0,0,0,0.28)] dark:shadow-none">
+          <label className="flex items-center gap-2 border-b border-foreground/8 px-3">
+            <Search className="size-4 shrink-0 stroke-foreground/35" />
+            <input
+              ref={inputRef}
+              type="search"
+              name="radar-country-search"
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setActiveIndex(0);
+              }}
+              onKeyDown={handleSearchKeyDown}
+              role="combobox"
+              aria-label="Search Radar Countries"
+              aria-autocomplete="list"
+              aria-expanded="true"
+              aria-controls={listboxId}
+              aria-activedescendant={
+                activeOption ? `${listboxId}-${activeOption.code}` : undefined
+              }
+              placeholder="Search countries"
+              autoComplete="off"
+              className="min-h-12 w-full bg-transparent text-base text-foreground/85 outline-none placeholder:text-foreground/30 sm:min-h-10 sm:text-sm"
+            />
+          </label>
+
+          <ul
+            id={listboxId}
+            role="listbox"
+            aria-label="Radar Country Coverage"
+            className="max-h-32 overflow-y-auto overscroll-contain p-1.5 [scrollbar-width:thin]"
+          >
+            {filteredOptions.map((option, index) => {
+              const selected = option.code === value;
+              const active = index === activeIndex;
+              const optionDetail =
+                option.code === WORLD_RADAR_COUNTRY
+                  ? "All available regions"
+                  : `${(option.airportCount ?? 0).toLocaleString()} airports, ${(option.radiusNm ?? 0).toLocaleString()} NM`;
+
+              return (
+                <li
+                  key={option.code}
+                  id={`${listboxId}-${option.code}`}
+                  role="option"
+                  aria-selected={selected}
+                  onPointerMove={() => setActiveIndex(index)}
+                  onPointerDown={(event) => event.preventDefault()}
+                  onClick={() => selectOption(option.code)}
+                  className={`flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 outline-none sm:min-h-9 ${
+                    active ? "bg-foreground/7" : ""
+                  } ${selected ? "text-emerald-700 dark:text-emerald-200" : "text-foreground/75"}`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium sm:text-xs">
+                      {option.label}
+                    </p>
+                    <p className="truncate text-xs text-foreground/35 sm:text-[10px]">
+                      {option.code === WORLD_RADAR_COUNTRY
+                        ? optionDetail
+                        : `${option.code}, ${optionDetail}`}
+                    </p>
+                  </div>
+                  {selected && (
+                    <Check className="size-4 shrink-0 stroke-emerald-600 dark:stroke-emerald-300" />
+                  )}
+                </li>
+              );
+            })}
+            {!filteredOptions.length && (
+              <li className="px-3 py-6 text-center text-sm text-foreground/40">
+                No countries match your search.
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RenderQualityControl({
+  value,
+  onChange,
+}: {
+  value: Settings["renderQuality"];
+  onChange: (value: Settings["renderQuality"]) => void;
+}) {
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const activeDescription =
+    RENDER_QUALITY_OPTIONS.find((option) => option.value === value)
+      ?.description ?? RENDER_QUALITY_OPTIONS[1].description;
+
+  const selectByIndex = (index: number) => {
+    const option = RENDER_QUALITY_OPTIONS[index];
+    if (!option) return;
+    onChange(option.value);
+    optionRefs.current[index]?.focus();
+  };
+
+  return (
+    <div className="flex w-full flex-col gap-3 px-3 py-3 text-left">
+      <div className="flex items-start gap-3">
+        <Gauge className="size-4 h-lh shrink-0 stroke-foreground/45" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-foreground/90 sm:text-[13px]">
+            Render Quality
+          </p>
+          <p className="text-xs/5 font-medium text-foreground/45 sm:text-[11px]/4">
+            Choose how much visual detail the live map renders.
+          </p>
+        </div>
       </div>
+
+      <div
+        role="radiogroup"
+        aria-label="Render Quality"
+        className="grid grid-cols-3 gap-1 rounded-xl bg-foreground/4 p-1 ring-1 ring-foreground/8"
+      >
+        {RENDER_QUALITY_OPTIONS.map((option, index) => {
+          const selected = option.value === value;
+          return (
+            <button
+              key={option.value}
+              ref={(element) => {
+                optionRefs.current[index] = element;
+              }}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => onChange(option.value)}
+              onKeyDown={(event) => {
+                let nextIndex: number | null = null;
+                if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                  nextIndex = (index + 1) % RENDER_QUALITY_OPTIONS.length;
+                } else if (
+                  event.key === "ArrowLeft" ||
+                  event.key === "ArrowUp"
+                ) {
+                  nextIndex =
+                    (index - 1 + RENDER_QUALITY_OPTIONS.length) %
+                    RENDER_QUALITY_OPTIONS.length;
+                } else if (event.key === "Home") {
+                  nextIndex = 0;
+                } else if (event.key === "End") {
+                  nextIndex = RENDER_QUALITY_OPTIONS.length - 1;
+                }
+
+                if (nextIndex != null) {
+                  event.preventDefault();
+                  selectByIndex(nextIndex);
+                }
+              }}
+              className={`min-h-11 rounded-lg px-2 py-2 text-center text-xs font-semibold outline-none focus-visible:outline-2 focus-visible:outline-emerald-400/60 sm:min-h-9 sm:text-[11px] ${
+                selected
+                  ? "bg-emerald-400/12 text-emerald-700 ring-1 ring-emerald-500/25 dark:text-emerald-200 dark:ring-emerald-400/20"
+                  : "text-foreground/45 hover:bg-foreground/5 hover:text-foreground/70"
+              }`}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <p className="text-xs/5 text-foreground/40 sm:text-[11px]/4">
+        {activeDescription}
+      </p>
     </div>
   );
 }
@@ -534,10 +855,10 @@ function WeatherRadarOpacitySlider({
 
 function SectionHeader({ title }: { title: string }) {
   return (
-    <div className="flex items-center gap-2 px-3 pt-3 pb-1">
-      <span className="text-[10px] font-bold tracking-widest text-foreground/45 uppercase">
+    <div className="flex items-center gap-3 px-3 pb-1.5 pt-5 first:pt-2">
+      <h3 className="text-[10px] font-bold tracking-widest text-foreground/45 uppercase">
         {title}
-      </span>
+      </h3>
       <div className="h-px flex-1 bg-foreground/8" />
     </div>
   );
@@ -562,6 +883,7 @@ function SettingRow({
 }) {
   return (
     <button
+      type="button"
       role="switch"
       aria-checked={checked}
       aria-disabled={disabled}
@@ -569,25 +891,27 @@ function SettingRow({
       onClick={() => {
         if (!disabled) onChange(!checked);
       }}
-      className={`flex w-full items-center gap-3.5 rounded-xl px-3 py-3 text-left transition-colors ${
+      className={`flex min-h-15 w-full items-center gap-3.5 rounded-xl px-3 py-3 text-left ${
         disabled
           ? "cursor-not-allowed opacity-60"
           : "hover:bg-foreground/4 active:bg-foreground/6"
       }`}
     >
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-foreground/5 text-foreground/50 ring-1 ring-foreground/8">
+      <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-foreground/5 text-foreground/50 ring-1 ring-foreground/8">
         {icon}
       </div>
-      <div className="flex-1 min-w-0">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-center gap-1.5">
-          <p className="text-[13px] font-medium text-foreground/85">{title}</p>
+          <p className="text-sm font-medium text-foreground/85 sm:text-[13px]">
+            {title}
+          </p>
           {badge && (
-            <span className="inline-flex items-center rounded-md bg-indigo-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-indigo-300 ring-1 ring-indigo-400/20">
+            <div className="rounded-md bg-foreground/6 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-foreground/45 ring-1 ring-foreground/10">
               {badge}
-            </span>
+            </div>
           )}
         </div>
-        <p className="mt-0.5 text-[11px] font-medium leading-relaxed text-foreground/40">
+        <p className="text-xs/5 font-medium text-foreground/40 sm:text-[11px]/4">
           {description}
         </p>
       </div>
@@ -610,27 +934,30 @@ function SegmentRow<T extends string | number>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div className="flex w-full items-center gap-3.5 rounded-xl px-3 py-2.5 text-left">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-foreground/5 text-foreground/50 ring-1 ring-foreground/8">
-        {icon}
+    <div className="flex w-full flex-col items-stretch gap-2.5 rounded-xl px-3 py-2.5 text-left sm:flex-row sm:items-center sm:gap-3.5">
+      <div className="flex min-w-0 flex-1 items-center gap-3.5">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-foreground/5 text-foreground/50 ring-1 ring-foreground/8">
+          {icon}
+        </div>
+        <p className="min-w-0 flex-1 text-sm font-medium text-foreground/85 sm:text-[13px]">
+          {title}
+        </p>
       </div>
-      <p className="flex-1 min-w-0 text-[13px] font-medium text-foreground/85">
-        {title}
-      </p>
       <div
         role="radiogroup"
         aria-label={title}
-        className="flex shrink-0 rounded-md bg-foreground/4 p-0.5 ring-1 ring-foreground/8"
+        className="flex w-full shrink-0 rounded-lg bg-foreground/4 p-0.5 ring-1 ring-foreground/8 sm:w-auto"
       >
         {options.map((opt) => {
           const isActive = opt.value === value;
           return (
             <button
               key={String(opt.value)}
+              type="button"
               role="radio"
               aria-checked={isActive}
               onClick={() => onChange(opt.value)}
-              className={`relative rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
+              className={`relative min-h-10 flex-1 rounded-md px-2 py-1 text-xs font-semibold outline-none focus-visible:outline-2 focus-visible:outline-emerald-400/55 sm:min-h-7 sm:flex-none sm:text-[11px] ${
                 isActive
                   ? "text-foreground/90"
                   : "text-foreground/45 hover:text-foreground/65"
@@ -659,6 +986,7 @@ function SegmentRow<T extends string | number>({
 function Toggle({ checked }: { checked: boolean }) {
   return (
     <div
+      aria-hidden="true"
       className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${
         checked ? "bg-foreground/25" : "bg-foreground/8"
       }`}

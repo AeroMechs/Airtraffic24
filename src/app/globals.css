@@ -135,38 +135,38 @@
     0 20px 40px -34px oklch(0.18 0.02 236 / 0.42);
 }
 
-@layer utilities {
-  .atc-radar-shell {
-    --background: oklch(0.115 0.018 238);
-    --foreground: oklch(0.955 0.012 238);
-    --card: oklch(0.145 0.018 238);
-    --card-foreground: oklch(0.955 0.012 238);
-    --popover: oklch(0.125 0.018 238);
-    --popover-foreground: oklch(0.955 0.012 238);
-    --primary: oklch(0.74 0.13 218);
-    --primary-foreground: oklch(0.105 0.018 238);
-    --secondary: oklch(0.2 0.02 238);
-    --secondary-foreground: oklch(0.9 0.015 238);
-    --muted: oklch(0.19 0.018 238);
-    --muted-foreground: oklch(0.68 0.015 238);
-    --accent: oklch(0.22 0.028 218);
-    --accent-foreground: oklch(0.92 0.018 220);
-    --border: oklch(0.28 0.022 238);
-    --input: oklch(0.28 0.022 238);
-    --ring: oklch(0.72 0.14 218);
-    --sidebar: oklch(0.105 0.016 238);
-    --sidebar-foreground: oklch(0.94 0.012 238);
-    --sidebar-primary: oklch(0.74 0.13 218);
-    --sidebar-primary-foreground: oklch(0.105 0.018 238);
-    --sidebar-accent: oklch(0.205 0.024 238);
-    --sidebar-accent-foreground: oklch(0.94 0.012 238);
-    --sidebar-border: oklch(0.27 0.02 238);
-    --sidebar-ring: oklch(0.72 0.14 218);
-    --ui-fg: 238 246 255;
-    --ui-bg: 7 12 18;
-    color-scheme: dark;
-  }
+.dark {
+  --background: oklch(0.115 0.018 238);
+  --foreground: oklch(0.955 0.012 238);
+  --card: oklch(0.145 0.018 238);
+  --card-foreground: oklch(0.955 0.012 238);
+  --popover: oklch(0.125 0.018 238);
+  --popover-foreground: oklch(0.955 0.012 238);
+  --primary: oklch(0.74 0.13 218);
+  --primary-foreground: oklch(0.105 0.018 238);
+  --secondary: oklch(0.2 0.02 238);
+  --secondary-foreground: oklch(0.9 0.015 238);
+  --muted: oklch(0.19 0.018 238);
+  --muted-foreground: oklch(0.68 0.015 238);
+  --accent: oklch(0.22 0.028 218);
+  --accent-foreground: oklch(0.92 0.018 220);
+  --border: oklch(0.28 0.022 238);
+  --input: oklch(0.28 0.022 238);
+  --ring: oklch(0.72 0.14 218);
+  --sidebar: oklch(0.105 0.016 238);
+  --sidebar-foreground: oklch(0.94 0.012 238);
+  --sidebar-primary: oklch(0.74 0.13 218);
+  --sidebar-primary-foreground: oklch(0.105 0.018 238);
+  --sidebar-accent: oklch(0.205 0.024 238);
+  --sidebar-accent-foreground: oklch(0.94 0.012 238);
+  --sidebar-border: oklch(0.27 0.02 238);
+  --sidebar-ring: oklch(0.72 0.14 218);
+  --ui-fg: 238 246 255;
+  --ui-bg: 7 12 18;
+  color-scheme: dark;
+}
 
+@layer utilities {
   .atc-map-surface {
     transform: translate3d(0, 0, 0);
     transform-origin: left center;

@@ -22,7 +22,7 @@ export default function RootLayout({
       className="dark h-full antialiased"
       style={{ colorScheme: "dark" }}
     >
-      <body className="min-h-full overflow-hidden bg-[#05090d] text-white">
+      <body className="min-h-full overflow-hidden bg-background text-foreground">
         <TooltipProvider>{children}</TooltipProvider>
         <Toaster richColors position="top-right" />
       </body>

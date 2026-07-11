@@ -15,8 +15,7 @@ import {
   ChevronsDown,
   RotateCw,
   RotateCcw,
-  Pause,
-  Play,
+  Square,
   Locate,
   Maximize,
   Minimize,
@@ -247,10 +246,10 @@ export function CameraControls() {
     supported: fsSupported,
     mounted,
   } = useFullscreen();
-  const freeMovement = !settings.autoOrbit;
-  const toggleAutoOrbit = useCallback(() => {
-    if (settings.autoOrbit) dispatchCameraStop("bearing");
-    update("autoOrbit", !settings.autoOrbit);
+  const stopAutoOrbit = useCallback(() => {
+    if (!settings.autoOrbit) return;
+    dispatchCameraStop("bearing");
+    update("autoOrbit", false);
   }, [settings.autoOrbit, update]);
 
   return (
@@ -329,27 +328,31 @@ export function CameraControls() {
       >
         <RotateCcw className="h-3.5 w-3.5" />
       </ControlButton>
-      <Divider />
-      <ActionButton
-        label={
-          freeMovement
-            ? "Resume automatic rotation"
-            : "Stop automatic rotation"
-        }
-        title={
-          freeMovement
-            ? "Resume automatic rotation"
-            : "Stop rotation and move the map freely"
-        }
-        pressed={freeMovement}
-        onClick={toggleAutoOrbit}
-      >
-        {freeMovement ? (
-          <Play className="size-3.5 shrink-0" />
-        ) : (
-          <Pause className="size-3.5 shrink-0" />
-        )}
-      </ActionButton>
+      {settings.autoOrbit && (
+        <>
+          <Divider />
+          <div className="relative size-8">
+            <motion.button
+              type="button"
+              className="absolute right-0 top-0 z-10 flex h-8 w-26 items-center justify-center gap-1.5 rounded-l-full rounded-r-lg border pl-2 pr-2.5 text-[0.6875rem] font-semibold tracking-wide whitespace-nowrap select-none"
+              style={{
+                color: "rgb(var(--ui-fg) / 0.76)",
+                borderColor: "rgb(var(--ui-fg) / 0.11)",
+                backgroundColor: "rgb(var(--ui-bg) / 0.82)",
+              }}
+              whileHover={{ x: -2 }}
+              whileTap={{ scale: 0.96 }}
+              aria-label="Stop automatic rotation"
+              title="Stop rotation and move the map freely"
+              onClick={stopAutoOrbit}
+              onContextMenu={(event) => event.preventDefault()}
+            >
+              <Square className="size-3 shrink-0" />
+              <span>Stop auto</span>
+            </motion.button>
+          </div>
+        </>
+      )}
 
       <div
         className="mx-auto my-0.5 h-px w-6"

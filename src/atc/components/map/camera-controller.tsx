@@ -103,6 +103,7 @@ export function CameraController({
     isFollowingRef,
     settings.altitudeDisplayMode,
     panelOpen,
+    settings.renderQuality,
   );
 
   // FPV camera hook

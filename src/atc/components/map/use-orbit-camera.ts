@@ -23,12 +23,17 @@ export function useOrbitCamera(
 ) {
   // Store speed in a ref so tick() reads the latest value without effect re-runs
   const speedRef = useRef(0);
+  const previousAutoOrbitRef = useRef(settings.autoOrbit);
   useEffect(() => {
     speedRef.current =
       settings.orbitSpeed * (settings.orbitDirection === "clockwise" ? 1 : -1);
   }, [settings.orbitSpeed, settings.orbitDirection]);
 
   useEffect(() => {
+    const resumedFromSetting =
+      !previousAutoOrbitRef.current && settings.autoOrbit;
+    previousAutoOrbitRef.current = settings.autoOrbit;
+
     if (
       !map ||
       !isLoaded ||
@@ -46,7 +51,7 @@ export function useOrbitCamera(
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     if (prefersReducedMotion) return;
 
-    function startOrbit() {
+    function startOrbit(easeIn = true) {
       if (!map || isInteractingRef.current) return;
 
       const resumeStart = performance.now();
@@ -66,7 +71,7 @@ export function useOrbitCamera(
 
         const resumeElapsed = performance.now() - resumeStart;
         const t = Math.min(resumeElapsed / ORBIT_EASE_IN_MS, 1);
-        const easeFactor = smoothstep(t);
+        const easeFactor = easeIn ? smoothstep(t) : 1;
         const bearing =
           map.getBearing() + speedRef.current * easeFactor * dt * 60;
         map.setBearing(bearing % 360);
@@ -117,10 +122,18 @@ export function useOrbitCamera(
     };
     window.addEventListener("atc:camera-stop", onCameraStop);
 
-    idleTimerRef.current = setTimeout(() => {
+    if (resumedFromSetting) {
+      // Pause/resume is an explicit playback control, so resume the live orbit
+      // immediately. Genuine pointer gestures still use the idle delay and
+      // eased restart paths above.
       isInteractingRef.current = false;
-      startOrbit();
-    }, IDLE_TIMEOUT_MS);
+      startOrbit(false);
+    } else {
+      idleTimerRef.current = setTimeout(() => {
+        isInteractingRef.current = false;
+        startOrbit();
+      }, IDLE_TIMEOUT_MS);
+    }
 
     return () => {
       stopOrbit();
@@ -129,5 +142,15 @@ export function useOrbitCamera(
       map.off("movestart", onMoveStart);
       window.removeEventListener("atc:camera-stop", onCameraStop);
     };
-  }, [map, isLoaded, city, followFlight, fpvFlight, settings.autoOrbit]);
+  }, [
+    map,
+    isLoaded,
+    city,
+    followFlight,
+    fpvFlight,
+    settings.autoOrbit,
+    isInteractingRef,
+    orbitFrameRef,
+    idleTimerRef,
+  ]);
 }

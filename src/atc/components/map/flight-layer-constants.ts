@@ -5,6 +5,7 @@ import type { AltitudeDisplayMode } from "@/atc/lib/altitude-display-mode";
 import type { TrailEntry } from "@/atc/hooks/use-trail-history";
 import type { TrailEnvelope } from "@/atc/lib/trails/types";
 import type { MutableRefObject } from "react";
+import type { RenderQuality } from "@/atc/lib/device-performance";
 
 // ── Overlay type augmentation ──────────────────────────────────────────
 
@@ -87,6 +88,7 @@ export type FlightLayerProps = {
   altitudeDisplayMode: AltitudeDisplayMode;
   globeMode?: boolean;
   force2DMarkers?: boolean;
+  renderQuality?: RenderQuality;
   followIcao24?: string | null;
   fpvIcao24?: string | null;
   fpvPositionRef?: MutableRefObject<{

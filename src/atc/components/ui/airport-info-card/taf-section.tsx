@@ -7,17 +7,36 @@ import type { TafData } from "./types";
 type Props = {
   taf: TafData | null;
   loading: boolean;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+  alwaysVisible?: boolean;
 };
 
-export function TafSection({ taf, loading }: Props) {
-  const [expanded, setExpanded] = useState(false);
-  if (!loading && !taf) return null;
+export function TafSection({
+  taf,
+  loading,
+  expanded: controlledExpanded,
+  onExpandedChange,
+  alwaysVisible = false,
+}: Props) {
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const expanded = controlledExpanded ?? internalExpanded;
+  if (!alwaysVisible && !loading && !taf) return null;
+
+  const toggleExpanded = () => {
+    const nextExpanded = !expanded;
+    if (onExpandedChange) {
+      onExpandedChange(nextExpanded);
+      return;
+    }
+    setInternalExpanded(nextExpanded);
+  };
 
   return (
     <div>
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
+        onClick={toggleExpanded}
         className="flex w-full items-center gap-1.5 rounded-md py-1 transition-colors hover:bg-foreground/3"
         aria-expanded={expanded}
         aria-controls="airport-taf-raw"
@@ -29,9 +48,14 @@ export function TafSection({ taf, loading }: Props) {
         {loading && !taf && (
           <Loader2 className="ml-auto h-3 w-3 animate-spin text-foreground/20" />
         )}
-        {taf && (
+        {taf && !loading && (
           <span className="ml-auto text-[9px] text-foreground/30">
             {expanded ? "Hide" : "Show"}
+          </span>
+        )}
+        {!loading && !taf && expanded && (
+          <span className="ml-auto text-[9px] text-foreground/25">
+            Unavailable
           </span>
         )}
       </button>

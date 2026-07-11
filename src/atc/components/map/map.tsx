@@ -15,6 +15,10 @@ import {
 } from "react";
 import { cn } from "@/atc/lib/utils";
 import {
+  getDevicePerformanceProfile,
+  type RenderQuality,
+} from "@/atc/lib/device-performance";
+import {
   createTerrainDemSource,
   DEFAULT_STYLE,
   DARK_TERRAIN_HILLSHADE_LAYER,
@@ -27,19 +31,7 @@ import {
 } from "@/atc/lib/map-styles";
 import { addBuildings3DLayer } from "./buildings-3d-layer";
 
-// Increase parallel tile requests for faster DEM + base tile loading.
-// Default is 6; 16 allows terrain tiles to saturate HTTP/2 connections.
-setMaxParallelImageRequests(16);
-
 const GLOBE_MAX_PITCH = 80;
-
-function getMapPixelRatio(): number {
-  if (typeof window === "undefined") return 1;
-  const memory = (navigator as Navigator & { deviceMemory?: number })
-    .deviceMemory;
-  const cap = memory != null && memory <= 4 ? 1 : 1.5;
-  return Math.max(1, Math.min(window.devicePixelRatio || 1, cap));
-}
 
 type MapContextValue = {
   map: maplibregl.Map | null;
@@ -68,6 +60,7 @@ type MapProps = {
   bearing?: number;
   minZoom?: number;
   maxZoom?: number;
+  renderQuality?: RenderQuality;
 };
 
 export type MapRef = maplibregl.Map;
@@ -86,6 +79,7 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
     bearing = -20,
     minZoom = 2,
     maxZoom = 16,
+    renderQuality,
   },
   ref,
 ) {
@@ -112,6 +106,11 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
     if (!containerRef.current) return;
 
     const safePitch = Math.min(pitch, GLOBE_MAX_PITCH);
+    const performanceProfile = getDevicePerformanceProfile(renderQuality);
+
+    // This setting is global to MapLibre, so resolve it immediately before
+    // creating the page's map rather than during server-side module loading.
+    setMaxParallelImageRequests(performanceProfile.tileRequestCount);
 
     const map = new maplibregl.Map({
       container: containerRef.current,
@@ -129,7 +128,7 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
       renderWorldCopies: true,
       // Keep models and labels crisp on HiDPI screens, while capping fill-rate
       // and retaining 1x rendering on memory-constrained devices.
-      pixelRatio: getMapPixelRatio(),
+      pixelRatio: performanceProfile.mapPixelRatio,
       fadeDuration: 0, // disable tile/symbol fade animations - fewer intermediate render frames
     });
 
@@ -143,6 +142,18 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Map initializes once; containerRef is stable, style/terrain/globe applied in separate effects
   }, []);
+
+  // Normally the tracker remounts the map when manual quality changes. Keep a
+  // safe live path as well for embedders that update this prop without a key.
+  useEffect(() => {
+    if (!mapInstance) return;
+
+    const performanceProfile = getDevicePerformanceProfile(renderQuality);
+    setMaxParallelImageRequests(performanceProfile.tileRequestCount);
+    if (mapInstance.getPixelRatio() !== performanceProfile.mapPixelRatio) {
+      mapInstance.setPixelRatio(performanceProfile.mapPixelRatio);
+    }
+  }, [mapInstance, renderQuality]);
 
   useEffect(() => {
     if (!mapInstance || !containerRef.current) return;

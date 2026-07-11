@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import Image from "next/image";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -28,7 +29,6 @@ import {
   PositionSourceBadge,
 } from "@/atc/components/ui/flight-badges";
 import type { FlightState, FlightTrack } from "@/atc/lib/opensky";
-import { VerticalProfile } from "@/atc/components/ui/vertical-profile";
 import type { TrailEntry } from "@/atc/hooks/use-trail-history";
 import { useSettings } from "@/atc/hooks/use-settings";
 import {
@@ -57,6 +57,22 @@ import {
   formatVerticalSpeed,
 } from "@/atc/lib/unit-formatters";
 import { cn } from "@/atc/lib/utils";
+
+const VerticalProfile = dynamic(
+  () =>
+    import("@/atc/components/ui/vertical-profile").then(
+      (module) => module.VerticalProfile,
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div
+        aria-hidden="true"
+        className="mt-3 h-[124px] w-full animate-pulse rounded-[14px] bg-foreground/[0.045]"
+      />
+    ),
+  },
+);
 
 type FlightCardProps = {
   flight: FlightState | null;

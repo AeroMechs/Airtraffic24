@@ -9,6 +9,10 @@
 // ────────────────────────────────────────────────────────────────────────
 
 import type { FlightState } from "@/atc/lib/opensky";
+import {
+  getDevicePerformanceProfile,
+  type RenderQuality,
+} from "@/atc/lib/device-performance";
 
 import { MODEL_MESH_METRICS } from "./model-mesh-metrics";
 
@@ -385,24 +389,155 @@ export function bucketFlightsByModel(
 
 // ── Preloading ─────────────────────────────────────────────────────────
 
-let preloaded = false;
+let commonModelsPrefetched = false;
+let idlePrefetchState: "idle" | "running" | "complete" = "idle";
+let idlePrefetchGeneration = 0;
+const modelHints = new Map<string, HTMLLinkElement>();
 
-const PREFETCH_KEYS: AircraftModelKey[] = [
+const IMMEDIATE_PREFETCH_KEYS: readonly AircraftModelKey[] = [
   "narrowbody",
   "b737",
   "widebody-2eng",
-];
+] as const;
 
-export function preloadAllModels(): void {
-  if (preloaded || typeof document === "undefined") return;
-  preloaded = true;
+type IdleWindow = Window &
+  typeof globalThis & {
+    requestIdleCallback?: (
+      callback: IdleRequestCallback,
+      options?: IdleRequestOptions,
+    ) => number;
+  };
 
-  for (const key of PREFETCH_KEYS) {
-    const link = document.createElement("link");
-    link.rel = "prefetch";
-    link.href = modelUrl(key);
-    link.as = "fetch";
-    link.crossOrigin = "anonymous";
-    document.head.appendChild(link);
+function addModelResourceHint(
+  key: AircraftModelKey,
+  priority: "background" | "selected",
+): void {
+  if (typeof document === "undefined") return;
+
+  const href = modelUrl(key);
+  const existing = modelHints.get(href);
+
+  if (existing) {
+    if (priority === "selected" && existing.rel !== "preload") {
+      existing.rel = "preload";
+      existing.fetchPriority = "high";
+    }
+    return;
   }
+
+  const link = document.createElement("link");
+  link.rel = priority === "selected" ? "preload" : "prefetch";
+  link.href = href;
+  link.as = "fetch";
+  link.crossOrigin = "anonymous";
+  link.dataset.airtraffic24AircraftModel = priority;
+  if (priority === "selected") link.fetchPriority = "high";
+  modelHints.set(href, link);
+  document.head.appendChild(link);
+}
+
+function uniqueRemainingModelKeys(): AircraftModelKey[] {
+  const immediateUrls = new Set(IMMEDIATE_PREFETCH_KEYS.map(modelUrl));
+  const seenUrls = new Set(immediateUrls);
+
+  return ALL_MODEL_KEYS.filter((key) => {
+    const url = modelUrl(key);
+    if (seenUrls.has(url)) return false;
+    seenUrls.add(url);
+    return true;
+  });
+}
+
+function idlePrefetchRemainingModels(generation: number): void {
+  const remaining = uniqueRemainingModelKeys();
+  if (remaining.length === 0) {
+    idlePrefetchState = "complete";
+    return;
+  }
+
+  let index = 0;
+  const schedule = (callback: IdleRequestCallback) => {
+    const idleWindow = window as IdleWindow;
+    if (idleWindow.requestIdleCallback) {
+      idleWindow.requestIdleCallback(callback, { timeout: 2_000 });
+      return;
+    }
+
+    window.setTimeout(
+      () =>
+        callback({
+          didTimeout: true,
+          timeRemaining: () => 0,
+        }),
+      250,
+    );
+  };
+
+  const loadNext: IdleRequestCallback = (deadline) => {
+    if (generation !== idlePrefetchGeneration) return;
+
+    // Work in small chunks so model warm-up never competes with map input.
+    let loadedThisTurn = 0;
+    while (
+      index < remaining.length &&
+      loadedThisTurn < 2 &&
+      (deadline.didTimeout || deadline.timeRemaining() > 4)
+    ) {
+      addModelResourceHint(remaining[index], "background");
+      index += 1;
+      loadedThisTurn += 1;
+    }
+
+    if (index < remaining.length) {
+      schedule(loadNext);
+    } else {
+      idlePrefetchState = "complete";
+    }
+  };
+
+  schedule(loadNext);
+}
+
+export function preloadAllModels(renderQuality?: RenderQuality): void {
+  if (typeof document === "undefined") return;
+
+  if (!commonModelsPrefetched) {
+    commonModelsPrefetched = true;
+    for (const key of IMMEDIATE_PREFETCH_KEYS) {
+      addModelResourceHint(key, "background");
+    }
+  }
+
+  const allowIdlePrefetch = getDevicePerformanceProfile(
+    renderQuality,
+  ).allowAllModelIdlePrefetch;
+
+  if (!allowIdlePrefetch) {
+    // Invalidate already-scheduled idle callbacks when the user switches to
+    // Data Saver before they can enqueue the remaining GLBs.
+    if (idlePrefetchState === "running") {
+      idlePrefetchGeneration += 1;
+      idlePrefetchState = "idle";
+    }
+    return;
+  }
+
+  if (idlePrefetchState === "idle") {
+    idlePrefetchState = "running";
+    idlePrefetchGeneration += 1;
+    idlePrefetchRemainingModels(idlePrefetchGeneration);
+  }
+}
+
+/**
+ * Promotes the selected aircraft's exact model ahead of camera approach.
+ * Duplicate silhouettes are automatically collapsed to their shared GLB URL.
+ */
+export function priorityPreloadSelectedFlightModel(
+  flight: Pick<FlightState, "category" | "typeCode">,
+): void {
+  addModelResourceHint(
+    resolveModelKey(flight.category, flight.typeCode),
+    "selected",
+  );
 }

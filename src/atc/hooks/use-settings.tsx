@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import type { AltitudeDisplayMode } from "@/atc/lib/altitude-display-mode";
+import type { RenderQuality } from "@/atc/lib/device-performance";
 import {
   normalizeRadarCountryCode,
   WORLD_RADAR_COUNTRY,
@@ -20,6 +21,7 @@ import { clamp } from "@/atc/lib/utils";
 
 export type OrbitDirection = "clockwise" | "counter-clockwise";
 export type UnitSystem = "aviation" | "metric" | "imperial";
+export type { RenderQuality } from "@/atc/lib/device-performance";
 
 export type Settings = {
   autoOrbit: boolean;
@@ -41,6 +43,7 @@ export type Settings = {
   weatherRadarOpacity: number;
   showDebugData: boolean;
   radarCountry: string;
+  renderQuality: RenderQuality;
 };
 
 export const TRAIL_THICKNESS_MIN = 0.5;
@@ -94,6 +97,12 @@ export function normalizeSettings(input: Settings): Settings {
         )
       : DEFAULT_SETTINGS.weatherRadarOpacity,
     radarCountry: normalizeRadarCountryCode(input.radarCountry),
+    renderQuality:
+      input.renderQuality === "data-saver" ||
+      input.renderQuality === "balanced" ||
+      input.renderQuality === "high"
+        ? input.renderQuality
+        : DEFAULT_SETTINGS.renderQuality,
   };
 }
 
@@ -117,10 +126,11 @@ export const DEFAULT_SETTINGS: Settings = {
   weatherRadarOpacity: 0.5,
   showDebugData: false,
   radarCountry: WORLD_RADAR_COUNTRY,
+  renderQuality: "balanced",
 };
 
 const STORAGE_KEY = "atc:settings";
-const STORAGE_VERSION = 7;
+const STORAGE_VERSION = 8;
 const WRITE_DEBOUNCE_MS = 300;
 
 const LEGACY_TRAIL_THICKNESS_DEFAULT = 1.3;
@@ -206,7 +216,10 @@ function isValidSettings(obj: unknown): obj is Settings {
     s.weatherRadarOpacity >= WEATHER_RADAR_OPACITY_MIN &&
     s.weatherRadarOpacity <= WEATHER_RADAR_OPACITY_MAX &&
     typeof s.showDebugData === "boolean" &&
-    typeof s.radarCountry === "string"
+    typeof s.radarCountry === "string" &&
+    (s.renderQuality === "data-saver" ||
+      s.renderQuality === "balanced" ||
+      s.renderQuality === "high")
   );
 }
 

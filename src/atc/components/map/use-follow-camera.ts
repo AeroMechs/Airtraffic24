@@ -10,18 +10,23 @@ import {
 } from "./camera-controller-utils";
 import { getZoomAdjustedElevationScale } from "./altitude-projection";
 import type { AltitudeDisplayMode } from "@/atc/lib/altitude-display-mode";
+import {
+  getDevicePerformanceProfile,
+  type RenderQuality,
+} from "@/atc/lib/device-performance";
 import { altitudeToElevation } from "@/atc/lib/flight-utils";
 import type { FlightState } from "@/atc/lib/opensky";
 
-const FOLLOW_ZOOM = 11.4;
-const FOLLOW_PITCH = 55;
-const FOLLOW_FLY_DURATION_MS = 1150;
-const RENDER_POSITION_WAIT_MS = 450;
+const RENDER_POSITION_WAIT_MS = 220;
 const CENTER_RESPONSE_MS = 90;
 const BEARING_RESPONSE_MS = 260;
 const OFFSET_RESPONSE_MS = 180;
 const LAYOUT_OFFSET_RESPONSE_MS = 180;
 const MAX_FRAME_DELTA_MS = 100;
+const MAX_CAMERA_TARGET_FPS = 30;
+const LOW_ZOOM_APPROACH_THRESHOLD = 5.5;
+const FOLLOW_EASE_ID = "aircraft-follow";
+const FOLLOW_APPROACH_EASE_ID = "aircraft-follow-approach";
 
 export type TrackedAircraftPosition = {
   /** Included by the renderer when available to reject a previous selection. */
@@ -130,7 +135,19 @@ export function useFollowCamera(
   isFollowingRef: MutableRefObject<boolean>,
   altitudeDisplayMode: AltitudeDisplayMode = "presentation",
   panelOpen = false,
+  renderQuality?: RenderQuality,
 ) {
+  const performanceProfile = getDevicePerformanceProfile(renderQuality);
+  const approachDurationMs = performanceProfile.followApproachDurationMs;
+  const approachZoom = performanceProfile.followApproachZoom;
+  const approachPitch = performanceProfile.followApproachPitch;
+  // MapLibre continues rendering each short ease at display refresh rate. A
+  // 30 Hz target cadence stays visually smooth while halving camera/event work
+  // on 60/120/144 Hz panels.
+  const cameraWriteIntervalMs = Math.max(
+    performanceProfile.followUpdateIntervalMs,
+    1000 / MAX_CAMERA_TARGET_FPS,
+  );
   const layoutOffsetXRef = useRef(0);
   const measureLayoutOffsetRef = useRef<() => void>(() => undefined);
 
@@ -198,10 +215,12 @@ export function useFollowCamera(
     map.stop();
 
     let frameId: number | null = null;
+    let approachStageTimer: number | null = null;
     let approachEndsAt = 0;
     let approachStarted = false;
     let measuredAfterApproach = false;
     let lastFrameTime = 0;
+    let lastCameraWriteTime = 0;
     let smoothLng = map.getCenter().lng;
     let smoothLat = map.getCenter().lat;
     let smoothBearing = map.getBearing();
@@ -216,21 +235,87 @@ export function useFollowCamera(
       now: number,
     ) => {
       approachStarted = true;
-      approachEndsAt = now + FOLLOW_FLY_DURATION_MS;
       smoothLng = normalizeLng(target.lng);
       smoothLat = target.lat;
       smoothBearing = Number.isFinite(target.track)
         ? target.track
         : map.getBearing();
+      const prefersReducedMotion =
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
+        false;
+      const cameraTarget = {
+        center: [smoothLng, smoothLat] as [number, number],
+        zoom: approachZoom,
+        pitch: approachPitch,
+        bearing: smoothBearing,
+        offset: [layoutOffsetXRef.current, 0] as [number, number],
+      };
+
+      if (prefersReducedMotion) {
+        map.easeTo({
+          ...cameraTarget,
+          duration: 0,
+          animate: false,
+          easeId: FOLLOW_APPROACH_EASE_ID,
+          noMoveStart: true,
+          essential: false,
+        });
+        approachEndsAt = now;
+        return;
+      }
+
+      const useStagedApproach =
+        performanceProfile.tier !== "high" &&
+        map.getZoom() < LOW_ZOOM_APPROACH_THRESHOLD;
+      approachEndsAt = now + approachDurationMs;
+
+      if (useStagedApproach) {
+        // First center the inexpensive world overview, then introduce the
+        // zoom/pitch once the destination tiles are already being requested.
+        // This avoids one giant CPU/GPU spike on phones and integrated GPUs.
+        const centerStageDuration = Math.max(
+          120,
+          Math.round(approachDurationMs * 0.24),
+        );
+        const detailStageDuration = Math.max(
+          220,
+          approachDurationMs - centerStageDuration,
+        );
+
+        // Keep the steady-state RAF writer parked until the detail stage has
+        // actually finished. Background-tab and busy-main-thread throttling
+        // can delay this timer beyond the nominal total approach duration.
+        approachEndsAt = Number.POSITIVE_INFINITY;
+        map.easeTo({
+          center: cameraTarget.center,
+          bearing: cameraTarget.bearing,
+          offset: cameraTarget.offset,
+          duration: centerStageDuration,
+          easing: (t) => 1 - Math.pow(1 - t, 3),
+          easeId: FOLLOW_APPROACH_EASE_ID,
+          essential: false,
+        });
+        approachStageTimer = window.setTimeout(() => {
+          approachStageTimer = null;
+          if (!isFollowingRef.current) return;
+          approachEndsAt = performance.now() + detailStageDuration;
+          map.easeTo({
+            ...cameraTarget,
+            duration: detailStageDuration,
+            easing: (t) => t * t * (3 - 2 * t),
+            easeId: FOLLOW_APPROACH_EASE_ID,
+            noMoveStart: true,
+            essential: false,
+          });
+        }, centerStageDuration);
+        return;
+      }
 
       map.flyTo({
-        center: [smoothLng, smoothLat],
-        zoom: FOLLOW_ZOOM,
-        pitch: FOLLOW_PITCH,
-        bearing: smoothBearing,
-        offset: [layoutOffsetXRef.current, 0],
-        duration: FOLLOW_FLY_DURATION_MS,
-        essential: true,
+        ...cameraTarget,
+        duration: approachDurationMs,
+        maxDuration: approachDurationMs,
+        essential: false,
       });
     };
 
@@ -242,6 +327,7 @@ export function useFollowCamera(
 
       if (document.hidden) {
         lastFrameTime = 0;
+        lastCameraWriteTime = 0;
         frameId = requestAnimationFrame(track);
         return;
       }
@@ -289,6 +375,14 @@ export function useFollowCamera(
         return;
       }
 
+      if (
+        lastCameraWriteTime > 0 &&
+        now - lastCameraWriteTime < cameraWriteIntervalMs
+      ) {
+        frameId = requestAnimationFrame(track);
+        return;
+      }
+
       if (lastFrameTime === 0) {
         // `getCenter()` is the transform center after MapLibre applies the
         // panel/elevation offset. Feeding it back as the logical aircraft
@@ -303,6 +397,7 @@ export function useFollowCamera(
         MAX_FRAME_DELTA_MS,
       );
       lastFrameTime = now;
+      lastCameraWriteTime = now;
 
       const centerAlpha = smoothingAlpha(deltaMs, CENTER_RESPONSE_MS);
       const bearingAlpha = smoothingAlpha(deltaMs, BEARING_RESPONSE_MS);
@@ -361,15 +456,18 @@ export function useFollowCamera(
         layoutOffsetAlpha,
       );
 
-      // This is an immediate, non-animated camera write. There are no queued
-      // MapLibre easings; RAF and the renderer share one interpolated target.
+      // A short, overlapping ease absorbs polling/interpolation jitter without
+      // queuing camera animations. Reusing the ease id lets MapLibre replace
+      // the previous target without emitting a new move lifecycle each frame.
       map.easeTo({
         center: [smoothLng, smoothLat],
         bearing: smoothBearing,
         offset: [offsetX + layoutOffsetX, offsetY],
-        duration: 0,
-        animate: false,
-        essential: true,
+        duration: Math.max(70, cameraWriteIntervalMs * 2.5),
+        easing: (t) => t,
+        easeId: FOLLOW_EASE_ID,
+        noMoveStart: true,
+        essential: false,
       });
 
       frameId = requestAnimationFrame(track);
@@ -380,6 +478,9 @@ export function useFollowCamera(
     return () => {
       isFollowingRef.current = false;
       if (frameId != null) cancelAnimationFrame(frameId);
+      if (approachStageTimer != null) {
+        window.clearTimeout(approachStageTimer);
+      }
       map.stop();
     };
   }, [
@@ -390,5 +491,11 @@ export function useFollowCamera(
     trackedPositionRef,
     isFollowingRef,
     altitudeDisplayMode,
+    performanceProfile.tier,
+    approachDurationMs,
+    approachZoom,
+    approachPitch,
+    cameraWriteIntervalMs,
+    renderQuality,
   ]);
 }

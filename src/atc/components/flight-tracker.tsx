@@ -19,10 +19,6 @@ import { AirspaceLayer } from "@/atc/components/map/airspace-layer";
 import { WeatherRadarLayer } from "@/atc/components/map/weather-radar-layer";
 import { UserLocationMarker } from "@/atc/components/map/user-location-marker";
 import { FlightLayers } from "@/atc/components/map/flight-layers";
-import {
-  MapStateTracker,
-  type MapViewState,
-} from "@/atc/components/map/map-state-tracker";
 import { FpvHud } from "@/atc/components/ui/fpv-hud";
 const ControlPanel = dynamic(() =>
   import("@/atc/components/ui/control-panel").then((mod) => mod.ControlPanel),
@@ -34,8 +30,8 @@ import {
 } from "@/atc/components/ui/atc-left-sidebar";
 import { AltitudeLegend } from "@/atc/components/ui/altitude-legend";
 import { CameraControls } from "@/atc/components/ui/camera-controls";
+import { MapStyleThemeSync } from "@/atc/components/ui/map-style-theme-sync";
 import { StatusBar } from "@/atc/components/ui/status-bar";
-import { MapAttribution } from "@/atc/components/ui/map-attribution";
 import { AtcPlayerBar } from "@/atc/components/ui/atc-panel";
 const AirportInfoCard = dynamic(() =>
   import("@/atc/components/ui/airport-info-card").then(
@@ -300,13 +296,11 @@ function FlightTrackerInner({
   const {
     flights,
     initialLoading,
-    refreshing,
     rateLimited,
     retryIn,
     source: radarSource,
     stale: radarStale,
     unavailable: radarUnavailable,
-    lastUpdatedAt,
     error: radarError,
   } = useGlobalRadarFlights({
     enabled: true,
@@ -433,26 +427,7 @@ function FlightTrackerInner({
   const displayFlight = selectedFlight;
 
   // ── Airport Board state ──────────────────────────────────────────────
-  const mapStateRef = useRef<MapViewState>({
-    zoom: 9.2,
-    center: { lat: 0, lng: 0 },
-  });
-  const [mapViewState, setMapViewState] = useState<MapViewState>({
-    zoom: 9.2,
-    center: { lat: 0, lng: 0 },
-  });
-
-  const handleMapStateChange = useCallback((state: MapViewState) => {
-    setMapViewState(state);
-  }, []);
-
-  const airportBoard = useAirportBoard(
-    displayFlights,
-    mapViewState.center,
-    mapViewState.zoom,
-    activeCity.iata,
-    selectedAirportIata,
-  );
+  const airportBoard = useAirportBoard(displayFlights, selectedAirportIata);
 
   useEffect(() => {
     let shouldClose = false;
@@ -811,6 +786,7 @@ function FlightTrackerInner({
       className="relative h-dvh w-screen overflow-hidden bg-sidebar"
       style={desktopPanelStyle}
     >
+      <MapStyleThemeSync isDark={mapStyle.dark} />
       <div
         className="atc-map-surface absolute inset-0 z-0 overflow-hidden bg-background"
         data-panel-open={desktopLeftPanelOpen}
@@ -820,6 +796,7 @@ function FlightTrackerInner({
           terrainProfile={mapStyle.terrainProfile}
           isDark={mapStyle.dark}
           globeMode={settings.globeMode}
+          renderQuality={settings.renderQuality}
         >
           <CameraController
             city={activeCity}
@@ -829,10 +806,6 @@ function FlightTrackerInner({
             fpvCameraMode={fpvCameraMode}
             fpvPositionRef={fpvPositionRef}
             panelOpen={desktopLeftPanelOpen}
-          />
-          <MapStateTracker
-            stateRef={mapStateRef}
-            onChange={handleMapStateChange}
           />
           <AirportLayer
             activeCity={activeCity}
@@ -866,6 +839,7 @@ function FlightTrackerInner({
             altitudeDisplayMode={settings.altitudeDisplayMode}
             globeMode={settings.globeMode}
             force2DMarkers={force2DMarkers}
+            renderQuality={settings.renderQuality}
             followIcao24={followIcao24}
             fpvIcao24={fpvIcao24}
             fpvPositionRef={fpvPositionRef}
@@ -935,12 +909,10 @@ function FlightTrackerInner({
               cityCoordinates={activeCity.coordinates}
               flightCount={displayFlights.length}
               initialLoading={initialLoading}
-              refreshing={refreshing}
               radarSource={radarSource}
               radarStale={radarStale}
               radarUnavailable={radarUnavailable}
               radarError={radarError}
-              lastUpdatedAt={lastUpdatedAt}
               rateLimited={rateLimited}
               retryIn={retryIn}
               onNorthUp={handleNorthUp}
@@ -973,12 +945,6 @@ function FlightTrackerInner({
             </div>
             <div className="pointer-events-auto">
               <AltitudeLegend />
-            </div>
-            <div className="pointer-events-auto">
-              <MapAttribution
-                styleId={mapStyle.id}
-                showAirspace={showAirspace}
-              />
             </div>
           </div>
         )}
