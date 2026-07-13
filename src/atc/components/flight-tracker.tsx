@@ -296,11 +296,14 @@ function FlightTrackerInner({
   const {
     flights,
     initialLoading,
+    refreshing: radarRefreshing,
     rateLimited,
     retryIn,
     source: radarSource,
     stale: radarStale,
     unavailable: radarUnavailable,
+    lastUpdatedAt: radarLastUpdatedAt,
+    requestDurationMs: radarRequestDurationMs,
     error: radarError,
   } = useGlobalRadarFlights({
     enabled: true,
@@ -774,7 +777,7 @@ function FlightTrackerInner({
         ? `${radarCountryCoverage.label} traffic`
       : trafficMode === "nearby"
         ? `Nearby ${activeCity.iata}`
-        : "Global traffic";
+        : null;
   const desktopPanelStyle = {
     "--atc-left-sidebar-width": ATC_LEFT_SIDEBAR_WIDTH,
     "--atc-left-chrome-shift": `calc(${ATC_LEFT_SIDEBAR_WIDTH} + 0.25rem)`,
@@ -913,8 +916,17 @@ function FlightTrackerInner({
               radarStale={radarStale}
               radarUnavailable={radarUnavailable}
               radarError={radarError}
+              radarMode={trafficMode}
+              radarRefreshing={radarRefreshing}
+              radarLastUpdatedAt={radarLastUpdatedAt}
+              radarRequestDurationMs={radarRequestDurationMs}
               rateLimited={rateLimited}
               retryIn={retryIn}
+              selectedAircraft={selectedIcao24 !== null}
+              selectedAircraftLive={liveSelectedFlight !== null}
+              selectedAircraftLastContactAt={
+                displayFlight?.lastContactAt ?? null
+              }
               onNorthUp={handleNorthUp}
               onResetView={handleResetView}
               onRandomAirport={handleRandomAirport}

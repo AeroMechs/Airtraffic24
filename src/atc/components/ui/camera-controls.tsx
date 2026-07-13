@@ -15,7 +15,7 @@ import {
   ChevronsDown,
   RotateCw,
   RotateCcw,
-  Square,
+  Hand,
   Locate,
   Maximize,
   Minimize,
@@ -331,26 +331,13 @@ export function CameraControls() {
       {settings.autoOrbit && (
         <>
           <Divider />
-          <div className="relative size-8">
-            <motion.button
-              type="button"
-              className="absolute right-0 top-0 z-10 flex h-8 w-26 items-center justify-center gap-1.5 rounded-l-full rounded-r-lg border pl-2 pr-2.5 text-[0.6875rem] font-semibold tracking-wide whitespace-nowrap select-none"
-              style={{
-                color: "rgb(var(--ui-fg) / 0.76)",
-                borderColor: "rgb(var(--ui-fg) / 0.11)",
-                backgroundColor: "rgb(var(--ui-bg) / 0.82)",
-              }}
-              whileHover={{ x: -2 }}
-              whileTap={{ scale: 0.96 }}
-              aria-label="Stop automatic rotation"
-              title="Stop rotation and move the map freely"
-              onClick={stopAutoOrbit}
-              onContextMenu={(event) => event.preventDefault()}
-            >
-              <Square className="size-3 shrink-0" />
-              <span>Stop auto</span>
-            </motion.button>
-          </div>
+          <ActionButton
+            label="Stop rotation"
+            title="Stop rotation and move the map freely"
+            onClick={stopAutoOrbit}
+          >
+            <Hand className="size-3.5 shrink-0" />
+          </ActionButton>
         </>
       )}
 

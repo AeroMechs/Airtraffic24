@@ -107,6 +107,8 @@ export type FlightState = {
   routeOrigin?: string | null;
   /** Destination airport IATA code supplied by the active live feed. */
   routeDestination?: string | null;
+  /** Provider observation time as Unix epoch milliseconds. */
+  lastContactAt?: number | null;
 
   // ── Debug / Raw Data (readsb only, hidden by default) ──────────────
 

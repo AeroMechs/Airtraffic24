@@ -30,7 +30,7 @@ export type RadarFlight = {
   aircraftType: string;
   tailNumber: string;
   source: "FlightRadar24 live";
-  lastContact: string;
+  lastContact: string | null;
   onGround: boolean;
   isGlider: boolean;
 };
@@ -374,7 +374,7 @@ function toRadarFlight(
     typeof aircraft.timestamp === "number" &&
     Number.isFinite(aircraft.timestamp)
       ? new Date(aircraft.timestamp * 1_000).toISOString()
-      : new Date().toISOString();
+      : null;
 
   return {
     id: `fr24-${aircraft.modeSCode || aircraft.id || callsign}-${tileId}-${index}`,

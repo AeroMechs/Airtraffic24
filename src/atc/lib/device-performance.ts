@@ -62,7 +62,10 @@ const PROFILE_PRESETS: Readonly<
     followApproachDurationMs: 800,
     followApproachZoom: 10.8,
     followApproachPitch: 46,
-    followUpdateIntervalMs: 1000 / 30,
+    // The aircraft only moves a fraction of a pixel between these updates at
+    // follow zoom. Capping constrained devices at 20 Hz leaves more main
+    // thread time for tiles and GLB uploads without making tracking step.
+    followUpdateIntervalMs: 1000 / 20,
     allowAllModelIdlePrefetch: false,
   },
   balanced: {

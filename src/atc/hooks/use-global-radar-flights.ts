@@ -25,6 +25,8 @@ type RadarFlight = {
   tailNumber: string;
   onGround: boolean;
   isGlider: boolean;
+  /** Compact provider observation time in Unix epoch seconds. */
+  lastContact?: number | null;
 };
 
 type RadarResponse = {
@@ -141,6 +143,12 @@ function toFlightState(flight: RadarFlight): FlightState {
     routeOrigin: flight.origin !== "---" ? flight.origin : null,
     routeDestination:
       flight.destination !== "---" ? flight.destination : null,
+    lastContactAt:
+      typeof flight.lastContact === "number" &&
+      Number.isFinite(flight.lastContact) &&
+      flight.lastContact > 0
+        ? flight.lastContact * 1_000
+        : null,
     debugData: null,
   };
 }
@@ -170,6 +178,9 @@ export function useGlobalRadarFlights({
   >(null);
   const [providerDetail, setProviderDetail] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [requestDurationMs, setRequestDurationMs] = useState<number | null>(
+    null,
+  );
   const [unavailable, setUnavailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -296,6 +307,7 @@ export function useGlobalRadarFlights({
     const controller = new AbortController();
     abortRef.current = controller;
     const requestSequence = ++requestSequenceRef.current;
+    const requestStartedAt = performance.now();
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -397,7 +409,7 @@ export function useGlobalRadarFlights({
             ? null
             : Number.isFinite(generatedAt)
               ? generatedAt
-              : Date.now(),
+              : null,
         );
       }
 
@@ -435,6 +447,9 @@ export function useGlobalRadarFlights({
       clearTimeout(timeout);
       if (requestSequence === requestSequenceRef.current) {
         abortRef.current = null;
+        setRequestDurationMs(
+          Math.max(0, performance.now() - requestStartedAt),
+        );
         setLoading(false);
         setInitialLoading(false);
       }
@@ -538,6 +553,7 @@ export function useGlobalRadarFlights({
     stale: enabled ? providerStatus === "Degraded" : false,
     unavailable: enabled ? unavailable : false,
     lastUpdatedAt: enabled ? lastUpdatedAt : null,
+    requestDurationMs: enabled ? requestDurationMs : null,
     error: enabled ? error : null,
   };
 }

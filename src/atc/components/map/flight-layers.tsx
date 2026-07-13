@@ -77,7 +77,10 @@ const HIGH_DENSITY_TRAIL_LIMIT = 700;
 const HIGH_DENSITY_3D_LIMIT = 1_800;
 const HIGH_DENSITY_3D_ZOOM_LIMIT = 7.25;
 const HIGH_DENSITY_TRAIL_ZOOM_RECOVERY = 8;
-const FOLLOW_APPROACH_WORK_ZOOM = 9.25;
+// Keep the global renderer focused on the tracked aircraft for the complete
+// global-to-follow transition. Releasing this at 9.25 rebuilt thousands of
+// aircraft while the camera was still zooming to 10.8+, causing a large hitch.
+const FOLLOW_APPROACH_WORK_ZOOM = 12;
 const VIEWPORT_PADDING_RATIO = 0.3;
 const VIEWPORT_UPDATE_THROTTLE_MS = 120;
 const VIEWPORT_REBUILD_SHIFT_RATIO = 0.08;
@@ -305,6 +308,14 @@ export function FlightLayers({
     id: null,
     flight: null,
     result: [],
+  });
+  // At overview zoom the selected dot is drawn at the latest authoritative
+  // position. Seed detailed interpolation from that exact same point once per
+  // selection so crossing the Deck.gl visibility boundary cannot jump the
+  // model (and its camera) backward to an older interpolation segment.
+  const trackingInterpolationSeedRef = useRef({
+    id: null as string | null,
+    snapshot: null as Snapshot | null,
   });
   const visibleTrailEntriesCacheRef = useRef<{
     source: TrailEntry[] | null;
@@ -885,6 +896,30 @@ export function FlightLayers({
           trackingCache.id = trackingId;
           trackingCache.flight = trackedFlight;
           trackingCache.result = trackedFlight ? [trackedFlight] : [];
+        }
+
+        const interpolationSeed = trackingInterpolationSeedRef.current;
+        if (interpolationSeed.id !== trackingId) {
+          interpolationSeed.id = trackingId;
+          interpolationSeed.snapshot = null;
+        }
+        if (
+          trackingId &&
+          currentZoom < GLOBE_FADE_ZOOM_CEIL
+        ) {
+          const currentSnapshot = currSnapshotsRef.current.get(trackingId);
+          if (
+            currentSnapshot &&
+            interpolationSeed.snapshot !== currentSnapshot
+          ) {
+            prevSnapshotsRef.current.set(trackingId, {
+              ...currentSnapshot,
+            });
+            interpolationSeed.snapshot = currentSnapshot;
+            // Recreate the small selected-only interpolation array from the
+            // newly aligned pair on the next detailed frame.
+            lastFlightsForInterpRef.current = null;
+          }
         }
 
         // Publish the position used by the overview dots before detailed Deck

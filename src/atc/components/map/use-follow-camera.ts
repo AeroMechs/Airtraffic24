@@ -4,7 +4,6 @@ import { useEffect, useRef, type MutableRefObject } from "react";
 import type maplibregl from "maplibre-gl";
 import {
   lerp,
-  lerpLng,
   normalizeLng,
   projectLngLatElevationPixelDelta,
 } from "./camera-controller-utils";
@@ -18,14 +17,13 @@ import { altitudeToElevation } from "@/atc/lib/flight-utils";
 import type { FlightState } from "@/atc/lib/opensky";
 
 const RENDER_POSITION_WAIT_MS = 220;
-const CENTER_RESPONSE_MS = 90;
 const BEARING_RESPONSE_MS = 260;
 const OFFSET_RESPONSE_MS = 180;
 const LAYOUT_OFFSET_RESPONSE_MS = 180;
+const RENDER_POSITION_HOLD_MS = 700;
 const MAX_FRAME_DELTA_MS = 100;
 const MAX_CAMERA_TARGET_FPS = 30;
 const LOW_ZOOM_APPROACH_THRESHOLD = 5.5;
-const FOLLOW_EASE_ID = "aircraft-follow";
 const FOLLOW_APPROACH_EASE_ID = "aircraft-follow-approach";
 
 export type TrackedAircraftPosition = {
@@ -120,6 +118,28 @@ function visibleMapCenterOffsetX(map: maplibregl.Map): number {
 }
 
 /**
+ * Match the desktop sidebar width from `ATC_LEFT_SIDEBAR_WIDTH`. The map
+ * surface starts its CSS transform in the same render that follow mode starts,
+ * so measuring only its first frame returns zero and pulls the plane sideways
+ * at the end of the transition. Seeding the known final offset lets the camera
+ * and panel move toward the same visual center from the beginning.
+ */
+function expectedPanelCenterOffsetX(panelOpen: boolean): number {
+  if (!panelOpen || window.innerWidth < 640) return 0;
+
+  const rootFontSize = Number.parseFloat(
+    window.getComputedStyle(document.documentElement).fontSize,
+  );
+  const rem = Number.isFinite(rootFontSize) ? rootFontSize : 16;
+  const sidebarWidth = Math.min(
+    28 * rem,
+    Math.max(22 * rem, window.innerWidth * 0.3),
+  );
+
+  return -(sidebarWidth - 4) / 2;
+}
+
+/**
  * Keeps the regular selected-aircraft camera locked to the same interpolated
  * position that the renderer uses. Only the first approach is animated by
  * MapLibre; steady-state tracking has one RAF writer and no queued easings.
@@ -149,7 +169,6 @@ export function useFollowCamera(
     1000 / MAX_CAMERA_TARGET_FPS,
   );
   const layoutOffsetXRef = useRef(0);
-  const measureLayoutOffsetRef = useRef<() => void>(() => undefined);
 
   // CSS translates the full map surface when the desktop details panel opens.
   // Cache the center of the transformed canvas' visible intersection instead
@@ -158,9 +177,10 @@ export function useFollowCamera(
   useEffect(() => {
     if (!map || !isLoaded) {
       layoutOffsetXRef.current = 0;
-      measureLayoutOffsetRef.current = () => undefined;
       return;
     }
+
+    layoutOffsetXRef.current = expectedPanelCenterOffsetX(panelOpen);
 
     let measureFrame: number | null = null;
     const mapSurface = map
@@ -186,8 +206,6 @@ export function useFollowCamera(
       }
     };
 
-    measureLayoutOffsetRef.current = measure;
-    scheduleMeasure();
     window.addEventListener("resize", scheduleMeasure, { passive: true });
     mapSurface?.addEventListener("transitionend", onSurfaceTransitionEnd);
 
@@ -195,7 +213,6 @@ export function useFollowCamera(
       if (measureFrame != null) cancelAnimationFrame(measureFrame);
       window.removeEventListener("resize", scheduleMeasure);
       mapSurface?.removeEventListener("transitionend", onSurfaceTransitionEnd);
-      measureLayoutOffsetRef.current = () => undefined;
     };
   }, [map, isLoaded, panelOpen]);
 
@@ -218,7 +235,6 @@ export function useFollowCamera(
     let approachStageTimer: number | null = null;
     let approachEndsAt = 0;
     let approachStarted = false;
-    let measuredAfterApproach = false;
     let lastFrameTime = 0;
     let lastCameraWriteTime = 0;
     let smoothLng = map.getCenter().lng;
@@ -227,6 +243,8 @@ export function useFollowCamera(
     let offsetX = 0;
     let offsetY = 0;
     let layoutOffsetX = layoutOffsetXRef.current;
+    let lastRenderedTarget: TrackedAircraftPosition | null = null;
+    let lastRenderedTargetAt = 0;
     const waitStartedAt = performance.now();
     const positionBeforeSelection = trackedPositionRef.current?.current ?? null;
 
@@ -235,6 +253,8 @@ export function useFollowCamera(
       now: number,
     ) => {
       approachStarted = true;
+      lastRenderedTarget = target;
+      lastRenderedTargetAt = now;
       smoothLng = normalizeLng(target.lng);
       smoothLat = target.lat;
       smoothBearing = Number.isFinite(target.track)
@@ -265,7 +285,6 @@ export function useFollowCamera(
       }
 
       const useStagedApproach =
-        performanceProfile.tier !== "high" &&
         map.getZoom() < LOW_ZOOM_APPROACH_THRESHOLD;
       approachEndsAt = now + approachDurationMs;
 
@@ -362,14 +381,22 @@ export function useFollowCamera(
         return;
       }
 
-      if (!measuredAfterApproach) {
-        measuredAfterApproach = true;
-        measureLayoutOffsetRef.current();
+      const hasRenderedTarget = isPositionForFlight(
+        renderedPosition,
+        followKey,
+      );
+      if (hasRenderedTarget) {
+        lastRenderedTarget = renderedPosition;
+        lastRenderedTargetAt = now;
       }
-
-      const target = isPositionForFlight(renderedPosition, followKey)
+      // Once the detailed renderer owns tracking, never alternate back to a
+      // raw provider coordinate. Hold the last rendered point briefly during
+      // a layer rebuild; a raw fallback here is the visible forward/back snap.
+      const target = hasRenderedTarget
         ? renderedPosition
-        : rawFlightPosition(followFlightRef.current);
+        : now - lastRenderedTargetAt <= RENDER_POSITION_HOLD_MS
+          ? lastRenderedTarget
+          : null;
       if (!target) {
         frameId = requestAnimationFrame(track);
         return;
@@ -399,15 +426,17 @@ export function useFollowCamera(
       lastFrameTime = now;
       lastCameraWriteTime = now;
 
-      const centerAlpha = smoothingAlpha(deltaMs, CENTER_RESPONSE_MS);
       const bearingAlpha = smoothingAlpha(deltaMs, BEARING_RESPONSE_MS);
       const offsetAlpha = smoothingAlpha(deltaMs, OFFSET_RESPONSE_MS);
       const layoutOffsetAlpha = smoothingAlpha(
         deltaMs,
         LAYOUT_OFFSET_RESPONSE_MS,
       );
-      smoothLng = lerpLng(smoothLng, target.lng, centerAlpha);
-      smoothLat = lerp(smoothLat, target.lat, centerAlpha);
+      // The renderer already supplies a smoothly interpolated position. A
+      // second geographic EMA made the camera chase behind the visible model
+      // and amplified every correction, so use the exact shared position.
+      smoothLng = normalizeLng(target.lng);
+      smoothLat = target.lat;
       if (Number.isFinite(target.track)) {
         smoothBearing = bearingToward(
           smoothBearing,
@@ -456,16 +485,16 @@ export function useFollowCamera(
         layoutOffsetAlpha,
       );
 
-      // A short, overlapping ease absorbs polling/interpolation jitter without
-      // queuing camera animations. Reusing the ease id lets MapLibre replace
-      // the previous target without emitting a new move lifecycle each frame.
+      // Apply one atomic camera state. Repeated 70-83ms eases were restarted
+      // every 33ms, so the camera completed less than half of each correction
+      // and visibly chased the aircraft. `easeTo` is used instead of `jumpTo`
+      // because MapLibre's jump options do not support our screen offset.
       map.easeTo({
         center: [smoothLng, smoothLat],
         bearing: smoothBearing,
         offset: [offsetX + layoutOffsetX, offsetY],
-        duration: Math.max(70, cameraWriteIntervalMs * 2.5),
-        easing: (t) => t,
-        easeId: FOLLOW_EASE_ID,
+        duration: 0,
+        animate: false,
         noMoveStart: true,
         essential: false,
       });

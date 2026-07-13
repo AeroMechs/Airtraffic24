@@ -35,7 +35,10 @@ type RadarTransportFlight = Pick<
   | "tailNumber"
   | "onGround"
   | "isGlider"
->;
+> & {
+  /** Compact transport value in Unix epoch seconds. */
+  lastContact: number | null;
+};
 
 type SerializableRadarSnapshot = Omit<RadarSnapshot, "flights"> & {
   flights: Array<RadarSnapshot["flights"][number] | RadarTransportFlight>;
@@ -57,6 +60,10 @@ function clamp(value: number, minimum: number, maximum: number) {
 function compactFlight(
   flight: RadarSnapshot["flights"][number],
 ): RadarTransportFlight {
+  const lastContactMs = flight.lastContact
+    ? Date.parse(flight.lastContact)
+    : Number.NaN;
+
   return {
     id: flight.id,
     icao24: flight.icao24,
@@ -75,6 +82,10 @@ function compactFlight(
     tailNumber: flight.tailNumber,
     onGround: flight.onGround,
     isGlider: flight.isGlider,
+    lastContact:
+      Number.isFinite(lastContactMs) && lastContactMs > 0
+        ? Math.trunc(lastContactMs / 1_000)
+        : null,
   };
 }
 
