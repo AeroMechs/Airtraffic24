@@ -71,6 +71,8 @@ type RadarTile = {
   east: number;
   presets: RadarPreset[];
   minUsefulRows?: number;
+  /** A small nearby box can legitimately contain fewer than minUsefulRows. */
+  allowSparseResponse?: boolean;
 };
 
 type RadarPreset = "default" | "noFaa" | "adsbOnly" | "allTraffic";
@@ -478,9 +480,13 @@ async function fetchTile(
     }
   }
 
+  const flights = dedupe(collected);
   return {
-    flights: dedupe(collected),
-    complete: complete && receivedResponse,
+    flights,
+    complete:
+      complete &&
+      receivedResponse &&
+      (tile.allowSparseResponse === true || flights.length >= minUsefulRows),
   };
 }
 
@@ -497,6 +503,7 @@ async function fetchUncached({
       ...boundsFromCenter(center, radiusNm),
       presets: ["adsbOnly", "noFaa", "default", "allTraffic"],
       minUsefulRows: 20,
+      allowSparseResponse: true,
     };
     const directResult = await fetchTile(nearbyTile, deadlineAt);
     const direct = directResult.flights.filter(

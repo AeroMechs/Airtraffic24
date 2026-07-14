@@ -12,22 +12,28 @@ import {
   unwrapLngPath,
 } from "@/atc/lib/geo";
 import {
-  GLOBE_NATIVE_ZOOM_CEIL,
-  GLOBE_SWITCH_ZOOM,
+  GLOBE_FADE_ZOOM_CEIL,
+  GLOBE_FADE_ZOOM_FLOOR,
   GEOJSON_THROTTLE_MS,
   GEOJSON_DEBOUNCE_MS,
 } from "./flight-layer-constants";
+import { createAircraftAtlas } from "./aircraft-appearance";
 
 const SOURCE_ID = "globe-aircraft-source";
 const LAYER_ID = "globe-aircraft-dots";
+const SYMBOL_LAYER_ID = "globe-aircraft-symbols";
+const AIRCRAFT_IMAGE_ID = "globe-aircraft-silhouette";
 const TRAIL_SOURCE_ID = "globe-trail-source";
 const TRAIL_LAYER_ID = "globe-trail-lines";
+const AIRCRAFT_ATLAS_SIZE = 128;
+const iconScale = (pixels: number) => pixels / AIRCRAFT_ATLAS_SIZE;
 
 /**
- * Custom hook that manages native MapLibre GeoJSON circle + line layers for
- * rendering aircraft dots AND trail lines at overview zoom levels. Native
- * MapLibre layers keep world/continent traffic lightweight in both Mercator
- * and globe projection, follow globe curvature, and handle the antimeridian.
+ * Custom hook that manages native MapLibre GeoJSON aircraft, circle, and line
+ * layers at overview zoom levels. A single symbol layer draws heading-aware
+ * silhouettes over the altitude dots, keeping thousands of aircraft cheap in
+ * both Mercator and globe projection while preserving globe curvature and
+ * antimeridian handling.
  */
 export function useGlobeDots(
   map: maplibregl.Map | null,
@@ -72,7 +78,7 @@ export function useGlobeDots(
               ["interpolate", ["linear"], ["get", "alt_norm"], 0, 1.2, 1, 2.0],
               2,
               ["interpolate", ["linear"], ["get", "alt_norm"], 0, 1.8, 1, 2.8],
-              GLOBE_NATIVE_ZOOM_CEIL,
+              GLOBE_FADE_ZOOM_CEIL,
               ["interpolate", ["linear"], ["get", "alt_norm"], 0, 3.0, 1, 5.0],
             ],
             "circle-color": ["get", "color"],
@@ -80,9 +86,9 @@ export function useGlobeDots(
               "interpolate",
               ["linear"],
               ["zoom"],
-              GLOBE_SWITCH_ZOOM - 0.05,
+              GLOBE_FADE_ZOOM_FLOOR,
               0.9,
-              GLOBE_SWITCH_ZOOM,
+              GLOBE_FADE_ZOOM_CEIL,
               0,
             ],
             "circle-stroke-color": "rgba(255, 255, 255, 0.5)",
@@ -92,10 +98,60 @@ export function useGlobeDots(
               ["zoom"],
               0,
               0.3,
-              GLOBE_SWITCH_ZOOM,
+              GLOBE_FADE_ZOOM_CEIL,
               0.8,
             ],
             "circle-blur": 0.1,
+          },
+        });
+      }
+
+      if (!map.hasImage(AIRCRAFT_IMAGE_ID)) {
+        const canvas = createAircraftAtlas();
+        const context = canvas.getContext("2d");
+        if (context) {
+          map.addImage(
+            AIRCRAFT_IMAGE_ID,
+            context.getImageData(0, 0, canvas.width, canvas.height),
+          );
+        }
+      }
+
+      if (!map.getLayer(SYMBOL_LAYER_ID) && map.hasImage(AIRCRAFT_IMAGE_ID)) {
+        map.addLayer({
+          id: SYMBOL_LAYER_ID,
+          type: "symbol",
+          source: SOURCE_ID,
+          layout: {
+            "symbol-placement": "point",
+            "icon-image": AIRCRAFT_IMAGE_ID,
+            "icon-size": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              0,
+              iconScale(7),
+              2,
+              iconScale(10),
+              GLOBE_FADE_ZOOM_CEIL,
+              iconScale(15),
+            ],
+            "icon-rotate": ["coalesce", ["get", "track"], 0],
+            "icon-rotation-alignment": "map",
+            "icon-pitch-alignment": "map",
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+          },
+          paint: {
+            "icon-opacity": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              GLOBE_FADE_ZOOM_FLOOR,
+              1,
+              GLOBE_FADE_ZOOM_CEIL,
+              0,
+            ],
           },
         });
       }
@@ -124,16 +180,16 @@ export function useGlobeDots(
                 0.8,
                 2,
                 1.2,
-                GLOBE_NATIVE_ZOOM_CEIL,
+                GLOBE_FADE_ZOOM_CEIL,
                 1.8,
               ],
               "line-opacity": [
                 "interpolate",
                 ["linear"],
                 ["zoom"],
-                GLOBE_SWITCH_ZOOM - 0.05,
+                GLOBE_FADE_ZOOM_FLOOR,
                 0.65,
-                GLOBE_SWITCH_ZOOM,
+                GLOBE_FADE_ZOOM_CEIL,
                 0,
               ],
             },
@@ -161,6 +217,7 @@ export function useGlobeDots(
       }
     };
     map.on("click", LAYER_ID, onDotClick);
+    map.on("click", SYMBOL_LAYER_ID, onDotClick);
 
     const onDotEnter = () => {
       map.getCanvas().style.cursor = "pointer";
@@ -170,17 +227,24 @@ export function useGlobeDots(
     };
     map.on("mouseenter", LAYER_ID, onDotEnter);
     map.on("mouseleave", LAYER_ID, onDotLeave);
+    map.on("mouseenter", SYMBOL_LAYER_ID, onDotEnter);
+    map.on("mouseleave", SYMBOL_LAYER_ID, onDotLeave);
 
     return () => {
       map.off("style.load", ensureGlobeLayers);
       map.off("click", LAYER_ID, onDotClick);
+      map.off("click", SYMBOL_LAYER_ID, onDotClick);
       map.off("mouseenter", LAYER_ID, onDotEnter);
       map.off("mouseleave", LAYER_ID, onDotLeave);
+      map.off("mouseenter", SYMBOL_LAYER_ID, onDotEnter);
+      map.off("mouseleave", SYMBOL_LAYER_ID, onDotLeave);
       try {
         if (map.getLayer(TRAIL_LAYER_ID)) map.removeLayer(TRAIL_LAYER_ID);
         if (map.getSource(TRAIL_SOURCE_ID)) map.removeSource(TRAIL_SOURCE_ID);
+        if (map.getLayer(SYMBOL_LAYER_ID)) map.removeLayer(SYMBOL_LAYER_ID);
         if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
         if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
+        if (map.hasImage(AIRCRAFT_IMAGE_ID)) map.removeImage(AIRCRAFT_IMAGE_ID);
       } catch {
         /* map already removed */
       }
@@ -202,7 +266,7 @@ export function useGlobeDots(
     const MAX_ALTITUDE_METERS = 13000;
 
     const dotsVisible =
-      overviewEnabled && currentZoom < GLOBE_NATIVE_ZOOM_CEIL;
+      overviewEnabled && currentZoom <= GLOBE_FADE_ZOOM_CEIL;
     // Only call setLayoutProperty when visibility actually changes
     if (dotsVisible !== lastDotsVisibleRef.current) {
       lastDotsVisibleRef.current = dotsVisible;
@@ -210,6 +274,13 @@ export function useGlobeDots(
         if (map.getLayer(LAYER_ID)) {
           map.setLayoutProperty(
             LAYER_ID,
+            "visibility",
+            dotsVisible ? "visible" : "none",
+          );
+        }
+        if (map.getLayer(SYMBOL_LAYER_ID)) {
+          map.setLayoutProperty(
+            SYMBOL_LAYER_ID,
             "visibility",
             dotsVisible ? "visible" : "none",
           );
@@ -227,7 +298,7 @@ export function useGlobeDots(
     }
 
     if (overviewEnabled) {
-      if (currentZoom < GLOBE_NATIVE_ZOOM_CEIL) {
+      if (currentZoom <= GLOBE_FADE_ZOOM_CEIL) {
         if (globeZoomEnteredAtRef.current === 0) {
           globeZoomEnteredAtRef.current = now;
         }
@@ -270,6 +341,7 @@ export function useGlobeDots(
                     icao24: f.icao24,
                     color: `rgb(${c[0]},${c[1]},${c[2]})`,
                     alt_norm: altNorm,
+                    track: Number.isFinite(f.trueTrack) ? f.trueTrack : 0,
                   },
                 });
               }

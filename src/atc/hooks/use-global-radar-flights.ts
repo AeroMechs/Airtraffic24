@@ -52,6 +52,8 @@ const MAX_BACKOFF_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 52_000;
 const GLOBAL_TRAFFIC_LIMIT = 8_000;
 const NEARBY_TRAFFIC_LIMIT = 1_000;
+const RETAINED_REAL_FLIGHT_TTL_MS = 5 * 60_000;
+const MAX_PROVIDER_CLOCK_SKEW_MS = 60_000;
 const FT_TO_METERS = 0.3048;
 const KNOTS_TO_METERS_PER_SECOND = 0.514444;
 const FPM_TO_METERS_PER_SECOND = 0.00508;
@@ -153,6 +155,75 @@ function toFlightState(flight: RadarFlight): FlightState {
   };
 }
 
+function canRetainRealFlight(
+  flight: FlightState,
+  lastSeenAt: number | undefined,
+  now: number,
+) {
+  const providerContactAt = flight.lastContactAt;
+  const hasPlausibleProviderTime =
+    typeof providerContactAt === "number" &&
+    Number.isFinite(providerContactAt) &&
+    providerContactAt > 0 &&
+    providerContactAt <= now + MAX_PROVIDER_CLOCK_SKEW_MS;
+  const referenceTime = hasPlausibleProviderTime
+    ? Math.min(providerContactAt, now)
+    : lastSeenAt;
+
+  return (
+    typeof referenceTime === "number" &&
+    Number.isFinite(referenceTime) &&
+    referenceTime <= now + MAX_PROVIDER_CLOCK_SKEW_MS &&
+    now - Math.min(referenceTime, now) <= RETAINED_REAL_FLIGHT_TTL_MS
+  );
+}
+
+function mergeRecentRealFlights({
+  freshFlights,
+  previousFlights,
+  lastSeenByIcao,
+  observedAt,
+  now,
+  maximumFlights,
+}: {
+  freshFlights: FlightState[];
+  previousFlights: FlightState[];
+  lastSeenByIcao: Map<string, number>;
+  observedAt: number;
+  now: number;
+  maximumFlights: number;
+}) {
+  const merged = freshFlights.slice(0, maximumFlights);
+  const included = new Set<string>();
+
+  for (const flight of merged) {
+    const icao24 = flight.icao24.toLowerCase();
+    included.add(icao24);
+    lastSeenByIcao.set(icao24, observedAt);
+  }
+
+  let retainedCount = 0;
+  for (const flight of previousFlights) {
+    if (merged.length >= maximumFlights) break;
+    const icao24 = flight.icao24.toLowerCase();
+    if (included.has(icao24)) continue;
+    if (!canRetainRealFlight(flight, lastSeenByIcao.get(icao24), now)) {
+      lastSeenByIcao.delete(icao24);
+      continue;
+    }
+
+    included.add(icao24);
+    merged.push(flight);
+    retainedCount += 1;
+  }
+
+  for (const icao24 of lastSeenByIcao.keys()) {
+    if (!included.has(icao24)) lastSeenByIcao.delete(icao24);
+  }
+
+  return { flights: merged, retainedCount };
+}
+
 export function useGlobalRadarFlights({
   enabled,
   mode,
@@ -189,6 +260,7 @@ export function useGlobalRadarFlights({
   const requestSequenceRef = useRef(0);
   const consecutiveFailuresRef = useRef(0);
   const flightsRef = useRef<FlightState[]>([]);
+  const flightLastSeenAtRef = useRef(new Map<string, number>());
   const dataQueryRef = useRef<string | null>(null);
   const completedQueryRef = useRef<string | null>(null);
   const fetchDataRef = useRef<() => void>(() => {});
@@ -377,49 +449,78 @@ export function useGlobalRadarFlights({
         return;
       }
 
-      const nextFlights = payload.data.flights.map(toFlightState);
+      const freshFlights = payload.data.flights.map(toFlightState);
       const isDegraded = payload.data.provider.status === "Degraded";
-      const canPreserveLastKnown =
+      const isPartialGlobal =
+        mode === "global" &&
+        payload.data.source === "FlightRadar24 partial live";
+      const hasPreviousFlights =
+        dataQueryRef.current === query && flightsRef.current.length > 0;
+      const generatedAt = payload.data.generatedAt
+        ? Date.parse(payload.data.generatedAt)
+        : Number.NaN;
+      const now = Date.now();
+      const observedAt =
+        Number.isFinite(generatedAt) &&
+        generatedAt > 0 &&
+        generatedAt <= now + MAX_PROVIDER_CLOCK_SKEW_MS
+          ? Math.min(generatedAt, now)
+          : now;
+      const shouldRetainPrevious =
         isDegraded &&
-        nextFlights.length === 0 &&
-        dataQueryRef.current === query &&
-        flightsRef.current.length > 0;
+        hasPreviousFlights &&
+        (freshFlights.length === 0 || isPartialGlobal);
+      let nextFlights = freshFlights;
+      let retainedCount = 0;
+
+      if (shouldRetainPrevious) {
+        const merged = mergeRecentRealFlights({
+          freshFlights,
+          previousFlights: flightsRef.current,
+          lastSeenByIcao: flightLastSeenAtRef.current,
+          observedAt,
+          now,
+          maximumFlights:
+            limit ??
+            (mode === "global" ? GLOBAL_TRAFFIC_LIMIT : NEARBY_TRAFFIC_LIMIT),
+        });
+        nextFlights = merged.flights;
+        retainedCount = merged.retainedCount;
+      } else {
+        flightLastSeenAtRef.current.clear();
+        for (const flight of freshFlights) {
+          flightLastSeenAtRef.current.set(
+            flight.icao24.toLowerCase(),
+            observedAt,
+          );
+        }
+      }
+
+      const retainedDetail =
+        retainedCount > 0
+          ? freshFlights.length > 0
+            ? "Live coverage is partial; showing fresh positions plus recent real positions retained in this browser."
+            : "Live refresh delayed; showing the latest real positions saved in this browser."
+          : payload.data.provider.detail;
 
       completedQueryRef.current = query;
       setSource(payload.data.provider.name);
       setProviderStatus(payload.data.provider.status);
-      setProviderDetail(
-        canPreserveLastKnown
-          ? "Live refresh delayed; showing the latest real positions saved in this browser."
-          : payload.data.provider.detail,
-      );
-      setUnavailable(
-        isDegraded && nextFlights.length === 0 && !canPreserveLastKnown,
-      );
+      setProviderDetail(retainedDetail);
+      setUnavailable(isDegraded && nextFlights.length === 0);
 
-      if (!canPreserveLastKnown) {
-        flightsRef.current = nextFlights;
-        dataQueryRef.current = query;
-        setFlights(nextFlights);
-        const generatedAt = payload.data.generatedAt
-          ? Date.parse(payload.data.generatedAt)
-          : Number.NaN;
+      flightsRef.current = nextFlights;
+      dataQueryRef.current = query;
+      setFlights(nextFlights);
+      if (freshFlights.length > 0) {
         setLastUpdatedAt(
-          isDegraded && nextFlights.length === 0
-            ? null
-            : Number.isFinite(generatedAt)
-              ? generatedAt
-              : null,
+          Number.isFinite(generatedAt) && generatedAt > 0 ? generatedAt : null,
         );
+      } else if (nextFlights.length === 0) {
+        setLastUpdatedAt(null);
       }
 
-      if (isDegraded && nextFlights.length === 0) {
-        setError(
-          canPreserveLastKnown
-            ? "Live refresh delayed; showing the latest real positions saved in this browser."
-            : payload.data.provider.detail,
-        );
-      }
+      if (isDegraded) setError(retainedDetail);
       if (isDegraded) {
         scheduleFailureRetry();
       } else {
@@ -458,6 +559,7 @@ export function useGlobalRadarFlights({
     clearRetryCountdown,
     clearTimer,
     enabled,
+    limit,
     mode,
     query,
     scheduleNext,

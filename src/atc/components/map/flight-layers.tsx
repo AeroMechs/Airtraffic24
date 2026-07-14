@@ -77,10 +77,7 @@ const HIGH_DENSITY_TRAIL_LIMIT = 700;
 const HIGH_DENSITY_3D_LIMIT = 1_800;
 const HIGH_DENSITY_3D_ZOOM_LIMIT = 7.25;
 const HIGH_DENSITY_TRAIL_ZOOM_RECOVERY = 8;
-// Keep the global renderer focused on the tracked aircraft for the complete
-// global-to-follow transition. Releasing this at 9.25 rebuilt thousands of
-// aircraft while the camera was still zooming to 10.8+, causing a large hitch.
-const FOLLOW_APPROACH_WORK_ZOOM = 12;
+const FOLLOW_APPROACH_WORK_ZOOM = 9.25;
 const VIEWPORT_PADDING_RATIO = 0.3;
 const VIEWPORT_UPDATE_THROTTLE_MS = 120;
 const VIEWPORT_REBUILD_SHIFT_RATIO = 0.08;
@@ -857,7 +854,7 @@ export function FlightLayers({
 
       const currentZoom = map?.getZoom() ?? 10;
       const isGlobe = globeModeRef.current;
-      const useNativeOverview = currentZoom < GLOBE_FADE_ZOOM_CEIL;
+      const useNativeOverview = currentZoom <= GLOBE_FADE_ZOOM_CEIL;
 
       let globeFade = 1;
       let layersVisible = true;
@@ -869,7 +866,9 @@ export function FlightLayers({
           const t =
             (currentZoom - GLOBE_FADE_ZOOM_FLOOR) /
             (GLOBE_FADE_ZOOM_CEIL - GLOBE_FADE_ZOOM_FLOOR);
-          globeFade = t * t * t;
+          // Match the native overview fade exactly: native opacity is 1 - t
+          // while Deck opacity is t, so aircraft never vanish at the handoff.
+          globeFade = t;
         }
       }
 
