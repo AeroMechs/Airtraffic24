@@ -298,8 +298,6 @@ function FlightTrackerInner({
     initialLoading,
     refreshing: radarRefreshing,
     rateLimited,
-    retryIn,
-    source: radarSource,
     stale: radarStale,
     unavailable: radarUnavailable,
     lastUpdatedAt: radarLastUpdatedAt,
@@ -910,9 +908,7 @@ function FlightTrackerInner({
               cityName={statusLocationName}
               cityIata={activeCity.iata}
               cityCoordinates={activeCity.coordinates}
-              flightCount={displayFlights.length}
               initialLoading={initialLoading}
-              radarSource={radarSource}
               radarStale={radarStale}
               radarUnavailable={radarUnavailable}
               radarError={radarError}
@@ -921,7 +917,6 @@ function FlightTrackerInner({
               radarLastUpdatedAt={radarLastUpdatedAt}
               radarRequestDurationMs={radarRequestDurationMs}
               rateLimited={rateLimited}
-              retryIn={retryIn}
               selectedAircraft={selectedIcao24 !== null}
               selectedAircraftLive={liveSelectedFlight !== null}
               selectedAircraftLastContactAt={

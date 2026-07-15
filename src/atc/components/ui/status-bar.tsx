@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { motion, AnimatePresence } from "motion/react";
-import { Dices, ShieldAlert } from "lucide-react";
+import { motion } from "motion/react";
+import { Dices } from "lucide-react";
 import {
   AtcTrigger,
   AtcFeedDropdown,
@@ -19,9 +19,7 @@ type StatusBarProps = {
   cityName?: string | null;
   cityIata: string;
   cityCoordinates: [number, number];
-  flightCount?: number;
   initialLoading?: boolean;
-  radarSource?: string | null;
   radarStale?: boolean;
   radarUnavailable?: boolean;
   radarError?: string | null;
@@ -30,7 +28,6 @@ type StatusBarProps = {
   radarLastUpdatedAt?: number | null;
   radarRequestDurationMs?: number | null;
   rateLimited?: boolean;
-  retryIn?: number;
   selectedAircraft?: boolean;
   selectedAircraftLive?: boolean;
   selectedAircraftLastContactAt?: number | null;
@@ -256,9 +253,7 @@ export function StatusBar({
   cityName,
   cityIata,
   cityCoordinates,
-  flightCount = 0,
   initialLoading = false,
-  radarSource = null,
   radarStale = false,
   radarUnavailable = false,
   radarError = null,
@@ -267,7 +262,6 @@ export function StatusBar({
   radarLastUpdatedAt = null,
   radarRequestDurationMs = null,
   rateLimited = false,
-  retryIn = 0,
   selectedAircraft = false,
   selectedAircraftLive = false,
   selectedAircraftLastContactAt = null,
@@ -313,47 +307,8 @@ export function StatusBar({
   }, [atcToggle]);
 
   const isAtcPlaying = atc.status === "playing";
-  const connecting =
-    initialLoading || (!radarSource && flightCount === 0 && !radarError);
-  const unavailable =
-    flightCount === 0 &&
-    (radarUnavailable || (!!radarError && !connecting));
-  const degraded =
-    flightCount > 0 && (radarStale || radarUnavailable || !!radarError);
-  const showFeedWarning = !rateLimited && (unavailable || degraded);
-
   return (
     <div className="relative flex flex-col items-start gap-2">
-      <AnimatePresence>
-        {(rateLimited || showFeedWarning) && (
-          <motion.div
-            initial={{ opacity: 0, y: 8, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.95 }}
-            transition={{ type: "spring", stiffness: 400, damping: 28 }}
-            className="flex items-center gap-2.5 rounded-xl border border-amber-500/15 bg-amber-500/6 px-3.5 py-2 backdrop-blur-2xl"
-            role="alert"
-          >
-            <ShieldAlert className="h-3.5 w-3.5 text-amber-400/80" />
-            <span className="text-[11px] font-medium tracking-wide text-amber-300/70">
-              {rateLimited
-                ? "Rate limited"
-                : unavailable
-                  ? "Live traffic temporarily unavailable"
-                  : "Refresh delayed · showing last real positions"}
-            </span>
-            {retryIn > 0 && (
-              <>
-                <div className="h-3 w-px bg-amber-400/10" />
-                <span className="font-mono text-[11px] font-semibold tabular-nums text-amber-400/60">
-                  {retryIn}s
-                </span>
-              </>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       <div className="flex flex-col-reverse items-start gap-2 sm:flex-row sm:items-center">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
